@@ -74,7 +74,21 @@ chainload_boot:
 
     ; No bootable drive found!
     mov     si, msg_no_boot
-    call    print_string
+    call    serial_print
+
+    ; Display clean message on VGA Row 4 (Col 0)
+    mov     ax, VGA_TEXT_SEG
+    mov     es, ax
+    mov     di, 640                         ; Row 4 * 160 = 640
+    mov     si, msg_vga_no_boot
+    mov     ah, 0x07                        ; Light Gray on Black
+.vga_err_loop:
+    lodsb
+    test    al, al
+    jz      .halt
+    stosw
+    jmp     .vga_err_loop
+
 .halt:
     hlt
     jmp     .halt
@@ -82,11 +96,18 @@ chainload_boot:
 .boot_drive_found:
     mov     dl, [current_drive]
     mov     si, msg_booting
-    call    print_string
+    call    serial_print
     mov     al, dl
     call    print_hex_byte
     mov     si, msg_dots
-    call    print_string
+    call    serial_print
+
+    ; Clear screen and reset cursor so booted OS has a clean console
+    call    vga_clear_screen
+    xor     ax, ax
+    mov     es, ax
+    mov     word [es:0x0450], 0
+    call    update_hw_cursor
 
     ; -------------------------------------------------------------------------
     ; Contract 3: Standard PC BIOS MBR Handover
@@ -108,22 +129,10 @@ chainload_boot:
     jmp     MBR_SEG:MBR_OFF
 
 ; =============================================================================
-; Helper Print Utilities using our own INT 10h
+; Helper Print Utilities using COM1 Serial Port
 ; =============================================================================
 print_string:
-    push    ax
-    push    si
-.loop:
-    lodsb
-    test    al, al
-    jz      .done
-    mov     ah, 0x0E
-    mov     bx, 0x0007
-    int     0x10                            ; Call our own INT 10h!
-    jmp     .loop
-.done:
-    pop     si
-    pop     ax
+    call    serial_print
     ret
 
 print_hex_byte:
@@ -150,11 +159,7 @@ print_hex_byte:
 .digit:
     add     al, '0'
 .emit:
-    push    dx
-    mov     ah, 0x0E
-    mov     bx, 0x0007
-    int     0x10
-    pop     dx
+    call    serial_tx_char
     ret
 
 align 4
@@ -170,9 +175,10 @@ mbr_dap:
     dq 0                                    ; LBA 0
 
 msg_probing     db "[IPO_Firmware] Probing drive 0x", 0
-msg_newline     db 10, 13, 0
+msg_newline     db 10, 0
 msg_booting     db "[IPO_Firmware] Bootable MBR found on drive 0x", 0
-msg_dots        db "... Launching MBR!", 10, 13, 0
-msg_no_boot     db "[IPO_Firmware] ERROR: No bootable disk found (missing 0x55AA)! System halted.", 10, 13, 0
+msg_dots        db "... Launching MBR!", 10, 0
+msg_no_boot     db "[IPO_Firmware] ERROR: No bootable disk found (missing 0x55AA)! System halted.", 10, 0
+msg_vga_no_boot db "No bootable device found. System halted.", 0
 msg_dbg_err     db "  -> INT 13h read failed with AH=0x", 0
 msg_dbg_bad_sig db "  -> Read OK but signature mismatch at 0x7DFE: 0x", 0

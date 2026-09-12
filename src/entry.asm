@@ -43,6 +43,7 @@ firmware_entry:
     ; 4. Initialize Video Subsystem (Mode 03h: 80x25 text) via our own INT 10h
     mov     ax, 0x0003
     int     0x10
+    call    bios_render_header
     mov     si, msg_vga_ready
     call    serial_print
 

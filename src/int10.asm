@@ -64,13 +64,14 @@ int10h_handler:
     mov     es, bx                          ; ES = 0xB800
 
     ; Offset = (row * 80 + col) * 2
-    movzx   ax, dh
-    mov     bx, 80
-    mul     bx
-    movzx   bx, dl
-    add     ax, bx
-    shl     ax, 1
-    mov     di, ax                          ; DI = buffer byte offset
+    movzx   ax, dh                          ; AX = row (0..24)
+    shl     ax, 4                           ; AX = row * 16
+    mov     di, ax
+    shl     ax, 2                           ; AX = row * 64
+    add     di, ax                          ; DI = row * 80
+    movzx   ax, dl                          ; AX = col (0..79)
+    add     di, ax                          ; DI = row * 80 + col
+    shl     di, 1                           ; DI = buffer byte offset
 
     ; Character attribute: default to light gray on black (0x07)
     mov     al, cl                          ; Character saved in CL
@@ -223,12 +224,12 @@ update_hw_cursor:
     push    dx
 
     movzx   ax, dh
-    mov     bx, 80
-    mul     bx
-    movzx   bx, dl
-    add     ax, bx                          ; AX = linear character index (0..1999)
-
-    mov     bx, ax                          ; BX = index
+    shl     ax, 4
+    mov     bx, ax
+    shl     ax, 2
+    add     bx, ax
+    movzx   ax, dl
+    add     bx, ax                          ; BX = linear character index (0..1999)
     mov     dx, CRT_ADDR_PORT
 
     ; Cursor Location High Register (0x0E)
@@ -302,6 +303,78 @@ vga_scroll_up:
     pop     es
     pop     ds
     ret
+
+; =============================================================================
+; Render BIOS Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
+; =============================================================================
+bios_render_header:
+    push    es
+    push    si
+    push    di
+    push    ax
+    push    cx
+    push    dx
+
+    ; Point ES to VGA text segment (0xB800)
+    mov     ax, VGA_TEXT_SEG
+    mov     es, ax
+
+    ; 1. Row 0 Left (col 0): "IPO_Firmware" (attribute 0x0A: Light Green on Black)
+    xor     di, di
+    mov     si, bios_str_title
+    mov     ah, 0x0A
+.loop_title:
+    lodsb
+    test    al, al
+    jz      .title_done
+    stosw
+    jmp     .loop_title
+.title_done:
+
+    ; 2. Row 0 Right (col 66): "by IPOleksenko" (attribute 0x0A)
+    ; Col 66 * 2 = 132 byte offset
+    mov     di, 132
+    mov     si, bios_str_author
+    mov     ah, 0x0A
+.loop_author:
+    lodsb
+    test    al, al
+    jz      .author_done
+    stosw
+    jmp     .loop_author
+.author_done:
+
+    ; 3. Row 2 (col 0): "BIOS Version 1.0 (x86 Bare-Metal)" (attribute 0x07: Light Gray)
+    ; Offset: (2 * 80 + 0) * 2 = 320
+    mov     di, 320
+    mov     si, bios_str_ver
+    mov     ah, 0x07
+.loop_ver:
+    lodsb
+    test    al, al
+    jz      .ver_done
+    stosw
+    jmp     .loop_ver
+.ver_done:
+
+    ; Set initial cursor position in BDA to Row 4, Col 0
+    xor     ax, ax
+    mov     es, ax
+    mov     dx, 0x0400                      ; DH = 4 (row), DL = 0 (col)
+    mov     [es:0x0450], dx
+    call    update_hw_cursor
+
+    pop     dx
+    pop     cx
+    pop     ax
+    pop     di
+    pop     si
+    pop     es
+    ret
+
+bios_str_title  db "IPO_Firmware", 0
+bios_str_author db "by IPOleksenko", 0
+bios_str_ver    db "BIOS Version 1.0 (x86 Bare-Metal)", 0
 
 ; =============================================================================
 ; VGA Hardware Initialization (Mode 03h: 80x25 text console)
