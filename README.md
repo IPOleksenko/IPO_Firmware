@@ -6,7 +6,7 @@ Independent bare-metal x86 BIOS-compatible Firmware service layer for QEMU and P
 
 ## 📋 Architecture & Runtime Services
 
-`IPO_Firmware` executes in low memory at `0x0800:0000` (physical `0x08000`), receiving control from an early-stage bootloader (such as `IPO_Boot_Rom`) under **Contract 2**. It provides standard PC BIOS runtime interrupt services and performs automated disk discovery and MBR handover under **Contract 3**.
+`IPO_Firmware` executes in low memory at `0x0800:0000` (physical `0x08000`), receiving control from an early-stage bootloader under **Contract 2**. It provides standard PC BIOS runtime interrupt services and performs automated disk discovery and MBR handover under **Contract 3**.
 
 ```text
 Boot ROM Handover (CS:IP = 0x0800:0x0004)
@@ -59,25 +59,26 @@ Runs firmware with built-in stub bootloader and no attached OS:
 make run
 ```
 
-### 2. Single-Argument Invocations
-* **With custom Boot ROM / RAM Boot (`BOOTROM=...`):**
-  ```bash
-  make run BOOTROM=/home/ipoleksenko/Project/IPO_OS/IPO_Boot_Rom/build/bootrom.bin
-  ```
-
-* **With OS image (`OS=...`):**
-  ```bash
-  make run OS=/home/ipoleksenko/Project/IPO_OS/build/IPO_OS.img
-  ```
-
-### 3. Combined Invocation (Boot ROM + OS)
-Builds a ROM embedding the specified Boot ROM and Boots the specified OS:
+### 2. Running with an External Boot ROM
+Embeds `firmware.bin` into a specified external Boot ROM:
 ```bash
-make run BOOTROM=/home/ipoleksenko/Project/IPO_OS/IPO_Boot_Rom/build/bootrom.bin OS=/home/ipoleksenko/Project/IPO_OS/build/IPO_OS.img
+make run BOOTROM=path/to/bootrom.bin
+```
+
+### 3. Running with an OS Disk Image
+Attaches a raw storage image as primary IDE master (`0x80`):
+```bash
+make run OS=path/to/disk.img
+```
+
+### 4. Running with Boot ROM and OS Image
+Builds a ROM embedding the specified Boot ROM and boots the target OS:
+```bash
+make run BOOTROM=path/to/bootrom.bin OS=path/to/disk.img
 ```
 
 ### 🔊 Audio Configuration
-By default, QEMU connects the PC Speaker emulation to PulseAudio/PipeWire (`AUDIO=pa`). You can customize the audio driver:
+By default, QEMU connects the PC Speaker emulation to PulseAudio/PipeWire (`AUDIO=pa`). You can customize or disable the audio driver:
 ```bash
 make run AUDIO=alsa ...   # Use ALSA
 make run AUDIO=sdl ...    # Use SDL audio

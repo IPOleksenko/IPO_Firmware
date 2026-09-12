@@ -1,11 +1,11 @@
 # IPO_Firmware Contract & Architecture Specification
 
 ## 1. Overview
-`IPO_Firmware` is an independent, bare-metal x86 BIOS service layer. It receives control from an early-stage Boot ROM (such as `IPO_Boot_Rom`) and provides standard BIOS runtime interrupt services (`INT 10h`, `INT 13h`, `INT 15h`, `INT 16h`) and disk discovery. It chainloads standard MBR bootloaders (including `IPO_OS/src/boot/boot.asm`) under the standard PC-AT BIOS contract.
+`IPO_Firmware` is an independent, bare-metal x86 BIOS service layer. It receives control from an early-stage Boot ROM and provides standard BIOS runtime interrupt services (`INT 10h`, `INT 13h`, `INT 15h`, `INT 16h`) and disk discovery. It chainloads standard MBR bootloaders under the standard PC-AT BIOS contract.
 
 ```
 +-------------------------------------------------------------+
-| IPO_Boot_Rom                                                |
+| Early-stage Boot ROM                                        |
 +-------------------------------------------------------------+
                               |
                               v Handover (Contract 2)
@@ -24,11 +24,11 @@
                               |
                               v Handover (Contract 3)
 +-------------------------------------------------------------+
-| MBR Bootloader (e.g. IPO_OS boot.asm)                       |
+| Standard MBR Bootloader (e.g. boot.bin)                     |
 +-------------------------------------------------------------+
 ```
 
-## 2. Input Contract (Contract 2: Boot_Rom -> Firmware)
+## 2. Input Contract (Contract 2: Boot_ROM -> Firmware)
 
 | Register / State | Value | Description |
 | :--- | :--- | :--- |

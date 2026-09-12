@@ -30,7 +30,7 @@ fi
 rom_input_size=$(stat -c %s "$BOOTROM_BIN")
 
 if [ "$rom_input_size" -eq "$ROMSIZE" ]; then
-    # Input is already a full 256KB Boot ROM (e.g. IPO_Boot_Rom)
+    # Input is already a full 256KB Boot ROM image
     # Copy it to output and embed firmware.bin at FW_OFFSET
     cp "$BOOTROM_BIN" "$OUTPUT_ROM"
     fw_size=$(stat -c %s "$FW_BIN")

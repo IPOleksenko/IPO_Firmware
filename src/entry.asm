@@ -7,12 +7,12 @@ ORG 0x0000
 %include "contract.inc"
 
 ; =============================================================================
-; Offset 0x0000: Magic Signature Header (Validated by Boot_Rom)
+; Offset 0x0000: Magic Signature Header (Validated by Boot_ROM)
 ; =============================================================================
 dd      FW_MAGIC                            ; 0x464F5049 ("IPOF")
 
 ; =============================================================================
-; Offset 0x0004: Entry Point (Boot_Rom jumps here under Contract 2)
+; Offset 0x0004: Entry Point (Boot_ROM jumps here under Contract 2)
 ; =============================================================================
 firmware_entry:
     cli

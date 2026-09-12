@@ -1,5 +1,6 @@
 ; stub_bootrom.asm — Self-contained minimal Boot ROM for standalone Firmware testing
-; Does not depend on IPO_Boot_Rom project sources
+; Does not depend on external Boot ROM project sources
+
 
 BITS 16
 ORG 0xF800
