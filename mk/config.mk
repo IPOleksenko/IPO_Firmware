@@ -50,23 +50,17 @@ ASM_FLAGS := -f bin -I$(INC) -I$(SRC)
 #                 EMULATION RUN ARGUMENTS
 # =============================================================================
 
-# Target OS storage media (passed as argument: make run OS=/path/to/os.img)
-OS       ?= ../build/IPO_OS.img
+# Target OS storage media (optional argument: make run OS=/path/to/disk.img)
+OS       ?=
 OS_IMAGE ?= $(OS)
-DISK1    ?= $(wildcard ../build/disk.img)
-CDROM    ?= $(wildcard ../build/disk.iso)
 MEM      ?= 8192
 
-# Emulates booting specifically from storage media (IDE disk index 0)
-QEMU_FLAGS := -M pc -m $(MEM) -bios $(FIRMWARE_ROM) \
-              -drive format=raw,file=$(OS_IMAGE),if=ide,index=0
+# Base QEMU flags for running Firmware BIOS
+QEMU_FLAGS := -M pc -m $(MEM) -bios $(FIRMWARE_ROM) -serial stdio
 
-ifneq ($(DISK1),)
-QEMU_FLAGS += -drive format=raw,file=$(DISK1),if=ide,index=1
+# If an OS storage media image is supplied, attach it as primary IDE master (disk 0x80)
+ifneq ($(OS_IMAGE),)
+QEMU_FLAGS += -drive format=raw,file=$(OS_IMAGE),if=ide,index=0
 endif
 
-ifneq ($(CDROM),)
-QEMU_FLAGS += -cdrom $(CDROM)
-endif
-
-QEMU_FLAGS += -serial stdio $(QEMU_EXTRA)
+QEMU_FLAGS += $(QEMU_EXTRA)

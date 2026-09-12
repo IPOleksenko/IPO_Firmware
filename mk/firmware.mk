@@ -41,3 +41,4 @@ test: $(TEST_ROM) $(TEST_MBR)
 	$(TESTS)/run_qemu_test.sh $(TEST_ROM) $(TEST_MBR)
 
 .PHONY: firmware test
+
