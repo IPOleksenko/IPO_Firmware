@@ -145,3 +145,4 @@ msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registe
 msg_vga_ready   db "[IPO_Firmware] Video Mode 03h (80x25 text) configured", 10, 0
 msg_a20_ready   db "[IPO_Firmware] Fast A20 Gate activated and verified", 10, 0
 msg_mem_ready   db "[IPO_Firmware] Memory map prepared (E820/E801 ready)", 10, 0
+

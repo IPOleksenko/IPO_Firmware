@@ -98,3 +98,4 @@ e820_buf        times 24 db 0
 ; Pad to 510 bytes and add standard MBR boot signature 0x55AA
 times 510 - ($ - $$) db 0
 dw 0xAA55
+

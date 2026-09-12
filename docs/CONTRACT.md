@@ -76,3 +76,4 @@ Firmware reproduces the exact environment expected from standard PC BIOS impleme
 ## 4. Verification & Testing
 - `make`: Compiles `build/firmware.bin` and verifies that its size does not exceed the 32 KB threshold.
 - `make test`: Packages `firmware.bin` with a self-contained stub Boot ROM (`build/stub_bootrom.bin`) into `build/test_rom.bin`, creates a 1MB test disk image containing `build/stub_mbr.bin`, launches QEMU with `-bios build/test_rom.bin -drive file=build/test_mbr.img,if=ide,index=0`, and validates all services end-to-end.
+

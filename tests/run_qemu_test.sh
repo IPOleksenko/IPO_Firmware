@@ -51,3 +51,4 @@ else
     echo "❌ FAIL: Expected verification markers were not found in output!" >&2
     exit 1
 fi
+

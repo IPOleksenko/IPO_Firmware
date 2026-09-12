@@ -124,6 +124,7 @@ int10h_handler:
 ; Input: AL = Video Mode (supports Mode 03h)
 ; -----------------------------------------------------------------------------
 .fn_set_mode:
+    call    vga_hardware_init
     call    vga_clear_screen
 
     ; Initialize BDA video fields
@@ -298,3 +299,211 @@ vga_scroll_up:
     pop     es
     pop     ds
     ret
+
+; =============================================================================
+; VGA Hardware Initialization (Mode 03h: 80x25 text console)
+; Programs Sequencer, CRTC, GC, AC, DAC, loads 8x16 font, and enables display.
+; =============================================================================
+vga_hardware_init:
+    push    es
+    push    ds
+    push    si
+    push    di
+    push    cx
+    push    dx
+    push    ax
+
+    mov     ax, FW_RAM_SEG
+    mov     ds, ax
+
+    ; 1. Misc Output Register (Port 0x3C2)
+    mov     dx, 0x03C2
+    mov     al, 0x67                        ; 28MHz, color mode (0x3D4), enable RAM
+    out     dx, al
+
+    ; 2. Sequencer Registers (Port 0x3C4 / 0x3C5)
+    mov     dx, 0x03C4
+    mov     si, vga_seq_data
+    mov     cx, 5
+    xor     ah, ah
+.loop_seq:
+    mov     al, ah
+    out     dx, al
+    inc     dx
+    lodsb
+    out     dx, al
+    dec     dx
+    inc     ah
+    loop    .loop_seq
+
+    ; 3. CRTC: Unlock CRTC registers 0..7 (clear bit 7 of reg 0x11)
+    mov     dx, CRT_ADDR_PORT               ; 0x3D4
+    mov     al, 0x11
+    out     dx, al
+    inc     dx
+    in      al, dx
+    and     al, 0x7F
+    out     dx, al
+    dec     dx
+
+    ; Write all 25 CRTC registers (Port 0x3D4 / 0x3D5)
+    mov     si, vga_crtc_data
+    mov     cx, 25
+    xor     ah, ah
+.loop_crtc:
+    mov     al, ah
+    out     dx, al
+    inc     dx
+    lodsb
+    out     dx, al
+    dec     dx
+    inc     ah
+    loop    .loop_crtc
+
+    ; 4. Graphics Controller Registers (Port 0x3CE / 0x3CF)
+    mov     dx, 0x03CE
+    mov     si, vga_gc_data
+    mov     cx, 9
+    xor     ah, ah
+.loop_gc:
+    mov     al, ah
+    out     dx, al
+    inc     dx
+    lodsb
+    out     dx, al
+    dec     dx
+    inc     ah
+    loop    .loop_gc
+
+    ; 5. Load 8x16 Font into Plane 2 (0xA0000)
+    ; Switch Sequencer to Plane 2 access
+    mov     dx, 0x03C4
+    mov     ax, 0x0100                      ; Synchronous reset
+    out     dx, ax
+    mov     ax, 0x0402                      ; Plane 2 write enable (bit 2)
+    out     dx, ax
+    mov     ax, 0x0704                      ; Sequential addressing (disable odd/even)
+    out     dx, ax
+    mov     ax, 0x0300                      ; Clear reset
+    out     dx, ax
+
+    ; Switch GC to map memory at 0xA0000
+    mov     dx, 0x03CE
+    mov     ax, 0x0005                      ; Write mode 0
+    out     dx, ax
+    mov     ax, 0x0406                      ; Map memory to 0xA0000 (64KB)
+    out     dx, ax
+
+    ; Copy 256 characters * 16 bytes into ES:DI (0xA000:0x0000)
+    ; Each character in Plane 2 takes 32 bytes (16 bytes glyph + 16 bytes pad)
+    mov     ax, 0xA000
+    mov     es, ax
+    xor     di, di
+    mov     si, vga_font_data
+    mov     cx, 256
+.loop_font:
+    push    cx
+    mov     cx, 8                           ; 8 words = 16 bytes
+    rep     movsw
+    add     di, 16                          ; Next character slot in 32-byte stride
+    pop     cx
+    loop    .loop_font
+
+    ; Restore Sequencer to normal text mode (Planes 0 & 1, odd/even enabled)
+    mov     dx, 0x03C4
+    mov     ax, 0x0100
+    out     dx, ax
+    mov     ax, 0x0302                      ; Planes 0 & 1 enable
+    out     dx, ax
+    mov     ax, 0x0304                      ; Odd/even mode enable
+    out     dx, ax
+    mov     ax, 0x0300
+    out     dx, ax
+
+    ; Restore GC to normal text mode (0xB8000)
+    mov     dx, 0x03CE
+    mov     ax, 0x1005                      ; Odd/even mode
+    out     dx, ax
+    mov     ax, 0x0E06                      ; Map memory to 0xB8000
+    out     dx, ax
+
+    ; 6. Attribute Controller Registers (Port 0x3C0)
+    ; Reset flip-flop by reading 0x3DA
+    mov     dx, 0x03DA
+    in      al, dx
+
+    mov     dx, 0x03C0
+    mov     si, vga_ac_data
+    mov     cx, 21
+    xor     ah, ah
+.loop_ac:
+    mov     al, ah
+    out     dx, al
+    lodsb
+    out     dx, al
+    inc     ah
+    loop    .loop_ac
+
+    ; 7. Initialize DAC Palette (16 standard EGA/VGA colors)
+    mov     dx, 0x03C8
+    xor     al, al
+    out     dx, al                          ; Start at color index 0
+    inc     dx                              ; Port 0x03C9 (DAC Data)
+    mov     si, vga_dac_data
+    mov     cx, 16 * 3
+.loop_dac:
+    lodsb
+    out     dx, al
+    loop    .loop_dac
+
+    ; 8. Enable Video Output (PAS bit in Attribute Controller)
+    mov     dx, 0x03DA
+    in      al, dx                          ; Reset flip-flop
+    mov     dx, 0x03C0
+    mov     al, 0x20                        ; Bit 5 = 1 (Enable Video / Palette Access Source)
+    out     dx, al
+
+    pop     ax
+    pop     dx
+    pop     cx
+    pop     di
+    pop     si
+    pop     ds
+    pop     es
+    ret
+
+; =============================================================================
+; VGA Mode 03h Register Tables
+; =============================================================================
+vga_seq_data    db 0x03, 0x00, 0x03, 0x00, 0x02
+vga_crtc_data   db 0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F
+                db 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00
+                db 0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3
+                db 0xFF
+vga_gc_data     db 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF
+vga_ac_data     db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07
+                db 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F
+                db 0x0C, 0x00, 0x0F, 0x08, 0x00
+
+vga_dac_data:
+    ; 16 standard VGA colors: 6-bit DAC values (0..63)
+    db 0,0,0        ; 0: Black
+    db 0,0,42       ; 1: Blue
+    db 0,42,0       ; 2: Green
+    db 0,42,42      ; 3: Cyan
+    db 42,0,0       ; 4: Red
+    db 42,0,42      ; 5: Magenta
+    db 42,21,0      ; 6: Brown
+    db 42,42,42     ; 7: Light Gray
+    db 21,21,21     ; 8: Dark Gray
+    db 21,21,63     ; 9: Light Blue
+    db 21,63,21     ; 10: Light Green
+    db 21,63,63     ; 11: Light Cyan
+    db 63,21,21     ; 12: Light Red
+    db 63,21,63     ; 13: Light Magenta
+    db 63,63,21     ; 14: Yellow
+    db 63,63,63     ; 15: White
+
+align 4
+vga_font_data:
+    incbin "src/font8x16.bin"

@@ -27,3 +27,4 @@ dd if="$FW_BIN" of="$OUTPUT_ROM" bs=1 seek="$FW_OFFSET" conv=notrunc status=none
 dd if="$STUB_ROM_BIN" of="$OUTPUT_ROM" bs=1 seek="$STUB_OFFSET" conv=notrunc status=none
 
 echo "[build_firmware] Test ROM created: $OUTPUT_ROM ($ROMSIZE bytes)"
+
