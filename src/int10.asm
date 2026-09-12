@@ -101,6 +101,7 @@ int10h_handler:
     jmp     .tt_save_cursor
 
 .tt_lf:
+    xor     dl, dl
     inc     dh
 .tt_check_scroll:
     cmp     dh, 25
@@ -283,10 +284,10 @@ vga_scroll_up:
     mov     ds, ax
     mov     es, ax
 
-    ; Move lines 1..24 to lines 0..23 (80 * 24 words = 1920 words)
-    xor     di, di                          ; Destination: row 0
-    mov     si, 160                         ; Source: row 1
-    mov     cx, 80 * 24
+    ; Move lines 2..24 to lines 1..23 (80 * 23 words = 1840 words, preserving Row 0 header)
+    mov     di, 160                         ; Destination: row 1
+    mov     si, 320                         ; Source: row 2
+    mov     cx, 80 * 23
     cld
     rep     movsw
 
@@ -344,23 +345,10 @@ bios_render_header:
     jmp     .loop_author
 .author_done:
 
-    ; 3. Row 2 (col 0): "BIOS Version 1.0 (x86 Bare-Metal)" (attribute 0x07: Light Gray)
-    ; Offset: (2 * 80 + 0) * 2 = 320
-    mov     di, 320
-    mov     si, bios_str_ver
-    mov     ah, 0x07
-.loop_ver:
-    lodsb
-    test    al, al
-    jz      .ver_done
-    stosw
-    jmp     .loop_ver
-.ver_done:
-
-    ; Set initial cursor position in BDA to Row 4, Col 0
+    ; Set initial cursor position in BDA to Row 2, Col 0 (start of log output)
     xor     ax, ax
     mov     es, ax
-    mov     dx, 0x0400                      ; DH = 4 (row), DL = 0 (col)
+    mov     dx, 0x0200                      ; DH = 2 (row), DL = 0 (col)
     mov     [es:0x0450], dx
     call    update_hw_cursor
 
@@ -374,7 +362,6 @@ bios_render_header:
 
 bios_str_title  db "IPO_Firmware", 0
 bios_str_author db "by IPOleksenko", 0
-bios_str_ver    db "BIOS Version 1.0 (x86 Bare-Metal)", 0
 
 ; =============================================================================
 ; VGA Hardware Initialization (Mode 03h: 80x25 text console)

@@ -74,21 +74,7 @@ chainload_boot:
 
     ; No bootable drive found!
     mov     si, msg_no_boot
-    call    serial_print
-
-    ; Display clean message on VGA Row 4 (Col 0)
-    mov     ax, VGA_TEXT_SEG
-    mov     es, ax
-    mov     di, 640                         ; Row 4 * 160 = 640
-    mov     si, msg_vga_no_boot
-    mov     ah, 0x07                        ; Light Gray on Black
-.vga_err_loop:
-    lodsb
-    test    al, al
-    jz      .halt
-    stosw
-    jmp     .vga_err_loop
-
+    call    bios_log
 .halt:
     hlt
     jmp     .halt
@@ -96,11 +82,11 @@ chainload_boot:
 .boot_drive_found:
     mov     dl, [current_drive]
     mov     si, msg_booting
-    call    serial_print
+    call    bios_log
     mov     al, dl
-    call    print_hex_byte
+    call    bios_log_hex_byte
     mov     si, msg_dots
-    call    serial_print
+    call    bios_log
 
     ; Clear screen and reset cursor so booted OS has a clean console
     call    vga_clear_screen
@@ -129,37 +115,14 @@ chainload_boot:
     jmp     MBR_SEG:MBR_OFF
 
 ; =============================================================================
-; Helper Print Utilities using COM1 Serial Port
+; Helper Print Utilities using bios_log
 ; =============================================================================
 print_string:
-    call    serial_print
+    call    bios_log
     ret
 
 print_hex_byte:
-    push    ax
-    push    bx
-    push    dx
-
-    mov     dh, al
-    shr     al, 4
-    call    .print_nibble
-    mov     al, dh
-    and     al, 0x0F
-    call    .print_nibble
-
-    pop     dx
-    pop     bx
-    pop     ax
-    ret
-.print_nibble:
-    cmp     al, 9
-    jbe     .digit
-    add     al, 'A' - 10
-    jmp     .emit
-.digit:
-    add     al, '0'
-.emit:
-    call    serial_tx_char
+    call    bios_log_hex_byte
     ret
 
 align 4
@@ -179,6 +142,5 @@ msg_newline     db 10, 0
 msg_booting     db "[IPO_Firmware] Bootable MBR found on drive 0x", 0
 msg_dots        db "... Launching MBR!", 10, 0
 msg_no_boot     db "[IPO_Firmware] ERROR: No bootable disk found (missing 0x55AA)! System halted.", 10, 0
-msg_vga_no_boot db "No bootable device found. System halted.", 0
 msg_dbg_err     db "  -> INT 13h read failed with AH=0x", 0
 msg_dbg_bad_sig db "  -> Read OK but signature mismatch at 0x7DFE: 0x", 0
