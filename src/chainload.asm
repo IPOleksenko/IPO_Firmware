@@ -139,8 +139,8 @@ mbr_dap:
 
 msg_probing     db "[IPO_Firmware] Probing drive 0x", 0
 msg_newline     db 10, 0
-msg_booting     db "[IPO_Firmware] Bootable MBR found on drive 0x", 0
-msg_dots        db "... Launching MBR!", 10, 0
-msg_no_boot     db "[IPO_Firmware] ERROR: No bootable disk found (missing 0x55AA)! System halted.", 10, 0
-msg_dbg_err     db "  -> INT 13h read failed with AH=0x", 0
-msg_dbg_bad_sig db "  -> Read OK but signature mismatch at 0x7DFE: 0x", 0
+msg_booting     db "[IPO_Firmware] Bootable storage found on drive 0x", 0
+msg_dots        db "... Handing over to OS!", 10, 0
+msg_no_boot     db "[IPO_Firmware] Boot Failure: No bootable disk found (missing 0x55AA). System halted.", 10, 0
+msg_dbg_err     db "  -> Drive not ready (status AH=0x", 0
+msg_dbg_bad_sig db "  -> Read OK but boot signature mismatch: 0x", 0
