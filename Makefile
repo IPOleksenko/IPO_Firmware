@@ -12,7 +12,10 @@ SRCS        := src/entry.asm \
                src/int13.asm \
                src/int15.asm \
                src/a20.asm \
+               src/kbd.asm \
                src/chainload.asm \
+               src/font8x16.bin \
+               src/vga_dac.bin \
                include/contract.inc
 
 .DEFAULT_GOAL := all

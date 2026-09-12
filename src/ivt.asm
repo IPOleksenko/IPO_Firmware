@@ -39,8 +39,13 @@ ivt_setup:
     mov     word [es:0x005A], FW_RAM_SEG
 
     ; 3. Setup standard BDA (BIOS Data Area) at 0x0040:0x0000 (0x0400)
-    mov     word [es:0x0410], 0x0021            ; Equipment word (color 80x25, 1 floppy)
+    mov     word [es:0x0400], 0x03F8            ; COM1 base I/O port address
+    mov     word [es:0x0410], 0x4223            ; Equipment word (color 80x25, mouse, coprocessor, floppy)
     mov     word [es:0x0413], 640               ; Base memory = 640 KB (0x0280)
+    mov     word [es:0x041A], 0x001E            ; Keyboard buffer head
+    mov     word [es:0x041C], 0x001E            ; Keyboard buffer tail
+    mov     word [es:0x0480], 0x001E            ; Keyboard buffer start offset
+    mov     word [es:0x0482], 0x003E            ; Keyboard buffer end offset
 
     pop     ax
     pop     cx

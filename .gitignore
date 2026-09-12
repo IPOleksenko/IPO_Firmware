@@ -7,6 +7,7 @@ sysroot
 *.img
 *.o
 *.bin
+!src/*.bin
 *.elf
 build/
 *.log

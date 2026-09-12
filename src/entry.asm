@@ -56,7 +56,12 @@ firmware_entry:
     mov     si, msg_mem_ready
     call    serial_print
 
-    ; 7. Discover bootable disk, load MBR, and hand off control (Contract 3)
+    ; 7. Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
+    call    ps2_controller_init
+    mov     si, msg_kbd_ready
+    call    serial_print
+
+    ; 8. Discover bootable disk, load MBR, and hand off control (Contract 3)
     jmp     chainload_boot
 
 ; =============================================================================
@@ -135,6 +140,7 @@ serial_print:
 %include "int13.asm"
 %include "int15.asm"
 %include "a20.asm"
+%include "kbd.asm"
 %include "chainload.asm"
 
 ; =============================================================================
@@ -145,4 +151,5 @@ msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registe
 msg_vga_ready   db "[IPO_Firmware] Video Mode 03h (80x25 text) configured", 10, 0
 msg_a20_ready   db "[IPO_Firmware] Fast A20 Gate activated and verified", 10, 0
 msg_mem_ready   db "[IPO_Firmware] Memory map prepared (E820/E801 ready)", 10, 0
+msg_kbd_ready   db "[IPO_Firmware] PS/2 keyboard controller configured (Set 2 -> Set 1 translation)", 10, 0
 

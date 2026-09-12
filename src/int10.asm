@@ -139,6 +139,9 @@ int10h_handler:
     mov     word [es:0x0463], CRT_ADDR_PORT ; CRT base = 0x3D4
     mov     byte [es:0x0484], 24            ; Rows - 1 = 24
     mov     word [es:0x0485], 16            ; Char height = 16
+    mov     byte [es:0x0487], 0x60          ; EGA/VGA active, 256KB video RAM
+    mov     byte [es:0x0488], 0xF9          ; EGA feature switches
+    mov     byte [es:0x0489], 0x51          ; Video mode options
 
     xor     dx, dx
     call    update_hw_cursor
@@ -444,13 +447,13 @@ vga_hardware_init:
     inc     ah
     loop    .loop_ac
 
-    ; 7. Initialize DAC Palette (16 standard EGA/VGA colors)
+    ; 7. Initialize DAC Palette (256 standard VGA colors)
     mov     dx, 0x03C8
     xor     al, al
     out     dx, al                          ; Start at color index 0
     inc     dx                              ; Port 0x03C9 (DAC Data)
     mov     si, vga_dac_data
-    mov     cx, 16 * 3
+    mov     cx, 256 * 3
 .loop_dac:
     lodsb
     out     dx, al
@@ -480,29 +483,14 @@ vga_crtc_data   db 0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F
                 db 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00
                 db 0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3
                 db 0xFF
-vga_gc_data     db 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF
+vga_gc_data     db 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x0F, 0xFF
 vga_ac_data     db 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07
                 db 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F
                 db 0x0C, 0x00, 0x0F, 0x08, 0x00
 
+align 4
 vga_dac_data:
-    ; 16 standard VGA colors: 6-bit DAC values (0..63)
-    db 0,0,0        ; 0: Black
-    db 0,0,42       ; 1: Blue
-    db 0,42,0       ; 2: Green
-    db 0,42,42      ; 3: Cyan
-    db 42,0,0       ; 4: Red
-    db 42,0,42      ; 5: Magenta
-    db 42,21,0      ; 6: Brown
-    db 42,42,42     ; 7: Light Gray
-    db 21,21,21     ; 8: Dark Gray
-    db 21,21,63     ; 9: Light Blue
-    db 21,63,21     ; 10: Light Green
-    db 21,63,63     ; 11: Light Cyan
-    db 63,21,21     ; 12: Light Red
-    db 63,21,63     ; 13: Light Magenta
-    db 63,63,21     ; 14: Yellow
-    db 63,63,63     ; 15: White
+    incbin "src/vga_dac.bin"
 
 align 4
 vga_font_data:
