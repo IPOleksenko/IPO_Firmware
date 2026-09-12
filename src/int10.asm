@@ -38,7 +38,14 @@ int10h_handler:
 ; Input: AL = ASCII char, BH = Page (ignored for page 0), BL = Color (attribute)
 ; -----------------------------------------------------------------------------
 .fn_teletype:
-    ; Mirror character to COM1 serial for debugging
+    ; Mirror character to COM1 serial for debugging (send CR before LF)
+    cmp     al, 10
+    jne     .tt_tx
+    push    ax
+    mov     al, 13
+    call    serial_tx_char
+    pop     ax
+.tt_tx:
     push    ax
     call    serial_tx_char
     pop     ax

@@ -139,25 +139,17 @@ serial_print:
 bios_log:
     push    si
     push    ax
+    push    bx
 .loop:
     lodsb
     test    al, al
     jz      .done
-    cmp     al, 10
-    jne     .send
-    push    ax
-    mov     al, 13
-    call    serial_tx_char
-    pop     ax
-.send:
-    call    serial_tx_char
-    push    bx
     mov     ah, 0x0E
     mov     bx, 0x0007
     int     0x10
-    pop     bx
     jmp     .loop
 .done:
+    pop     bx
     pop     ax
     pop     si
     ret
@@ -186,7 +178,6 @@ bios_log_hex_byte:
 .digit:
     add     al, '0'
 .emit:
-    call    serial_tx_char
     push    bx
     mov     ah, 0x0E
     mov     bx, 0x0007
