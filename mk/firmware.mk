@@ -18,6 +18,33 @@ $(FIRMWARE_BIN): $(SRCS)
 $(FIRMWARE_ROM): $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $(TOOLS)/build_firmware.sh
 	$(TOOLS)/build_firmware.sh $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $@
 
+# Build customized ROM embedding this firmware into specified Boot ROM / RAM boot
+$(RUN_ROM): $(FIRMWARE_BIN) $(TOOLS)/build_firmware.sh
+	@rom_target="$(ROM_BIN)"; \
+	if [ -d "$$rom_target" ]; then \
+		if [ -f "$$rom_target/build/bootrom_template.bin" ]; then \
+			rom_target="$$rom_target/build/bootrom_template.bin"; \
+		elif [ -f "$$rom_target/build/bootrom.bin" ]; then \
+			rom_target="$$rom_target/build/bootrom.bin"; \
+		else \
+			echo "[IPO_Firmware] Building Boot ROM in $$rom_target..."; \
+			$(MAKE) -C "$$rom_target" bootrom || exit 1; \
+			rom_target="$$rom_target/build/bootrom_template.bin"; \
+		fi; \
+	fi; \
+	if [ ! -f "$$rom_target" ]; then \
+		if [ "$$rom_target" = "../IPO_Boot_Rom/build/bootrom_template.bin" ] && [ -d "../IPO_Boot_Rom" ]; then \
+			echo "[IPO_Firmware] Building IPO_Boot_Rom..."; \
+			$(MAKE) -C ../IPO_Boot_Rom bootrom || exit 1; \
+		fi; \
+	fi; \
+	if [ ! -f "$$rom_target" ]; then \
+		echo "ERROR: Boot ROM / RAM boot image '$$rom_target' not found!" >&2; \
+		echo "Usage: make run [BOOTROM=path/to/bootrom.bin] [OS=path/to/os.img]" >&2; \
+		exit 1; \
+	fi; \
+	$(TOOLS)/build_firmware.sh $(FIRMWARE_BIN) "$$rom_target" $@
+
 # -----------------------------------------------------------------------------
 # Standalone Testing Artifacts
 # -----------------------------------------------------------------------------
