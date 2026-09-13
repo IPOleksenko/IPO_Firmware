@@ -7,11 +7,11 @@ BITS 16
 ; =============================================================================
 ; Memory Layout for EHCI USB Transfers (in safe low conventional memory)
 ; =============================================================================
-EHCI_QH_ADDR        equ 0x11000     ; Queue Head (64 bytes aligned)
-EHCI_QTD_ADDR       equ 0x11100     ; Queue Transfer Descriptor
-EHCI_CBW_ADDR       equ 0x11200     ; 31-byte Command Block Wrapper
-EHCI_CSW_ADDR       equ 0x11280     ; 13-byte Command Status Wrapper
-EHCI_SETUP_ADDR     equ 0x11300     ; 8-byte Setup Packet
+EHCI_QH_ADDR        equ 0x2000      ; Queue Head (64 bytes aligned)
+EHCI_QTD_ADDR       equ 0x2100      ; Queue Transfer Descriptor (32 bytes aligned)
+EHCI_CBW_ADDR       equ 0x2200      ; 31-byte Command Block Wrapper
+EHCI_CSW_ADDR       equ 0x2280      ; 13-byte Command Status Wrapper
+EHCI_SETUP_ADDR     equ 0x2300      ; 8-byte Setup Packet
 
 ; =============================================================================
 ; usb_init — Initialize USB EHCI Host Controller and detect USB Flash Drive

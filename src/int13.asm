@@ -149,9 +149,25 @@ int13h_handler:
 
 .read_via_usb:
     ; EBX = LBA, CX = sector count, ES:DI = buffer
+.usb_loop:
+    push    cx
+    mov     cx, 1
     call    usb_read_sectors
-    jc      .dap_read_fail_simple
+    jc      .usb_fail
+    inc     ebx
+    add     di, 512
+    jnc     .usb_no_wrap
+    mov     ax, es
+    add     ax, 0x1000
+    mov     es, ax
+.usb_no_wrap:
+    pop     cx
+    loop    .usb_loop
     jmp     .dap_success
+
+.usb_fail:
+    pop     cx
+    jmp     .dap_read_fail_simple
 
 .dap_read_fail_simple:
     pop     bx
