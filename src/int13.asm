@@ -100,8 +100,23 @@ int13h_handler:
 
     mov     ebx, [ds:si + 8]                ; Starting LBA (low 32 bits)
 
+    ; Check Drive Type in Scratch RAM (Segment 0x0000)
+    push    ds
+    xor     ax, ax
+    mov     ds, ax
+    movzx   bp, dl
+    and     bp, 0x03
+    mov     al, [ds:SCRATCH_DRV_TYPE_80 + bp]
+    pop     ds
+
+    cmp     al, DRV_TYPE_SATA_AHCI
+    je      .read_via_ahci
+
+    cmp     al, DRV_TYPE_USB_BOT
+    je      .read_via_usb
+
     ; DL is the drive number (0x80 = Master, 0x81 = Slave)
-    ; Determine base I/O port
+    ; Determine base I/O port for Legacy ATA PIO
     mov     bp, ATA_PRI_DATA                ; Default: Primary ATA channel (0x1F0)
 
 .sector_read_loop:
@@ -124,6 +139,32 @@ int13h_handler:
 
     pop     cx
     loop    .sector_read_loop
+    jmp     .dap_success
+
+.read_via_ahci:
+    ; EBX = LBA, CX = sector count, ES:DI = buffer
+    call    ahci_read_sectors
+    jc      .dap_read_fail_simple
+    jmp     .dap_success
+
+.read_via_usb:
+    ; EBX = LBA, CX = sector count, ES:DI = buffer
+    call    usb_read_sectors
+    jc      .dap_read_fail_simple
+    jmp     .dap_success
+
+.dap_read_fail_simple:
+    pop     bx
+    pop     cx
+    pop     dx
+    pop     di
+    pop     si
+    pop     bp
+    pop     es
+    pop     ds
+    mov     ah, 0x04                        ; Read error
+    stc
+    jmp     .exit
 
 .dap_success:
     pop     bx

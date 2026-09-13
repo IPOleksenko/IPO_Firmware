@@ -30,6 +30,10 @@ TEST_MBR     := $(BUILD)/test_mbr.img
 # =============================================================================
 
 SRCS    := $(SRC)/entry.asm \
+           $(SRC)/pci_scan.asm \
+           $(SRC)/vbios.asm \
+           $(SRC)/ahci.asm \
+           $(SRC)/usb_ehci.asm \
            $(SRC)/ivt.asm \
            $(SRC)/int10.asm \
            $(SRC)/int13.asm \
@@ -81,8 +85,14 @@ ifneq ($(AUDIO),none)
 QEMU_FLAGS += -audiodev $(AUDIO),id=pa -machine pcspk-audiodev=pa
 endif
 
-# If an OS storage media image is supplied, attach it as primary IDE master (disk 0x80)
+# If an OS storage media image is supplied, attach it according to DRIVE_TYPE (ide, ahci, or usb)
 ifneq ($(OS_IMAGE),)
+DRIVE_TYPE ?= ide
+ifeq ($(DRIVE_TYPE),ahci)
+QEMU_FLAGS += -device ahci,id=ahci -device ide-hd,drive=sata_disk,bus=ahci.0 -drive id=sata_disk,file=$(OS_IMAGE),format=raw,if=none
+else ifeq ($(DRIVE_TYPE),usb)
+QEMU_FLAGS += -device usb-ehci,id=ehci -device usb-storage,bus=ehci.0,drive=usb_disk -drive id=usb_disk,file=$(OS_IMAGE),format=raw,if=none
+else
 QEMU_FLAGS += -drive format=raw,file=$(OS_IMAGE),if=ide,index=0
 # Optional secondary disk
 DISK ?=
@@ -90,6 +100,7 @@ ifneq ($(DISK),)
 QEMU_FLAGS += -drive format=raw,file=$(DISK),if=ide,index=1
 else ifneq ($(wildcard $(dir $(OS_IMAGE))disk.img),)
 QEMU_FLAGS += -drive format=raw,file=$(dir $(OS_IMAGE))disk.img,if=ide,index=1
+endif
 endif
 endif
 

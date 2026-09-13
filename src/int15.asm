@@ -38,7 +38,7 @@ int15h_handler:
     push    si
     push    bx
 
-    mov     ax, FW_RAM_SEG
+    mov     ax, cs
     mov     ds, ax
 
     ; Ensure dynamic memory size has been detected
@@ -96,7 +96,7 @@ int15h_handler:
 ; -----------------------------------------------------------------------------
 .fn_e801:
     push    ds
-    mov     bx, FW_RAM_SEG
+    mov     bx, cs
     mov     ds, bx
     call    ensure_memory_detected
 
@@ -134,17 +134,40 @@ int15h_handler:
     iret
 
 ; =============================================================================
-; Memory Detection Routine (QEMU fw_cfg + CMOS fallback)
+; Memory Detection Routine (Standard CMOS primary + QEMU fw_cfg fallback)
 ; =============================================================================
 ensure_memory_detected:
     push    eax
     push    edx
+    push    bx
+    push    cx
 
     ; Only detect once
     cmp     byte [mem_detected_flag], 1
     je      .already_detected
 
-    ; 1. Try QEMU fw_cfg port 0x510 (selector) / 0x511 (data)
+    ; 1. Try standard AT/ATX CMOS registers first (works on physical silicon)
+    ; Read CMOS 0x34 (low), 0x35 (high) = 64KB blocks above 16MB
+    mov     al, 0x34
+    out     CMOS_INDEX_PORT, al
+    in      al, CMOS_DATA_PORT
+    mov     bl, al
+
+    mov     al, 0x35
+    out     CMOS_INDEX_PORT, al
+    in      al, CMOS_DATA_PORT
+    mov     bh, al                          ; BX = blocks above 16MB (64KB blocks)
+
+    test    bx, bx
+    jz      .try_fw_cfg
+
+    movzx   eax, bx
+    shl     eax, 16                         ; * 65536 = bytes above 16MB
+    add     eax, 16 * 1024 * 1024           ; Add base 16 MB
+    jmp     .store_and_compute
+
+.try_fw_cfg:
+    ; 2. Fallback to QEMU fw_cfg port 0x510 (selector) / 0x511 (data)
     ; Selector 0x0001 = FW_CFG_RAM_SIZE (64-bit total RAM in bytes)
     mov     dx, FW_CFG_PORT_SEL
     mov     ax, FW_CFG_ID_RAM_SIZE
@@ -165,30 +188,16 @@ ensure_memory_detected:
     push    bx
     pop     eax                             ; EAX = total RAM in bytes
 
-    ; Validate fw_cfg result (if fw_cfg missing, reads 0xFFFFFFFF or 0)
+    ; Validate fw_cfg result (if missing, reads 0xFFFFFFFF or 0)
     test    eax, eax
-    jz      .fallback_cmos
+    jz      .use_default_ram
     cmp     eax, 0xFFFFFFFF
-    je      .fallback_cmos
-
+    je      .use_default_ram
     jmp     .store_and_compute
 
-.fallback_cmos:
-    ; Read CMOS 0x30 (low), 0x31 (high) = KB between 1MB and 64MB
-    ; Read CMOS 0x34 (low), 0x35 (high) = 64KB blocks above 16MB
-    mov     al, 0x34
-    out     CMOS_INDEX_PORT, al
-    in      al, CMOS_DATA_PORT
-    mov     bl, al
-
-    mov     al, 0x35
-    out     CMOS_INDEX_PORT, al
-    in      al, CMOS_DATA_PORT
-    mov     bh, al                          ; BX = blocks above 16MB (64KB blocks)
-
-    movzx   eax, bx
-    shl     eax, 16                         ; * 65536 = bytes above 16MB
-    add     eax, 16 * 1024 * 1024           ; Add base 16 MB
+.use_default_ram:
+    ; Default: 128 MB
+    mov     eax, 128 * 1024 * 1024
 
 .store_and_compute:
     mov     [total_ram_bytes], eax
@@ -218,6 +227,8 @@ ensure_memory_detected:
     mov     byte [mem_detected_flag], 1
 
 .already_detected:
+    pop     cx
+    pop     bx
     pop     edx
     pop     eax
     ret

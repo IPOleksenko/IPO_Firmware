@@ -8,6 +8,10 @@ ivt_setup:
     push    di
     push    cx
     push    ax
+    push    bx
+
+    ; Get current code segment (0xF000 in Shadow RAM mode)
+    mov     bx, cs
 
     ; 1. Point all 256 vectors to default_int_handler
     xor     ax, ax
@@ -17,26 +21,26 @@ ivt_setup:
     mov     cx, 256
 .loop_default:
     mov     word [es:di], default_int_handler   ; Offset
-    mov     word [es:di+2], FW_RAM_SEG          ; Segment 0x0800
+    mov     word [es:di+2], bx                  ; Segment = CS (dynamic)
     add     di, 4
     loop    .loop_default
 
     ; 2. Register implemented BIOS Interrupt handlers
     ; INT 10h (Video Services) — Vector 0x10 * 4 = 0x0040
     mov     word [es:0x0040], int10h_handler
-    mov     word [es:0x0042], FW_RAM_SEG
+    mov     word [es:0x0042], bx
 
     ; INT 13h (Disk Services) — Vector 0x13 * 4 = 0x004C
     mov     word [es:0x004C], int13h_handler
-    mov     word [es:0x004E], FW_RAM_SEG
+    mov     word [es:0x004E], bx
 
     ; INT 15h (System Services) — Vector 0x15 * 4 = 0x0054
     mov     word [es:0x0054], int15h_handler
-    mov     word [es:0x0056], FW_RAM_SEG
+    mov     word [es:0x0056], bx
 
     ; INT 16h (Keyboard Services) — Vector 0x16 * 4 = 0x0058
     mov     word [es:0x0058], int16h_handler
-    mov     word [es:0x005A], FW_RAM_SEG
+    mov     word [es:0x005A], bx
 
     ; 3. Setup standard BDA (BIOS Data Area) at 0x0040:0x0000 (0x0400)
     mov     word [es:0x0400], 0x03F8            ; COM1 base I/O port address
@@ -47,6 +51,7 @@ ivt_setup:
     mov     word [es:0x0480], 0x001E            ; Keyboard buffer start offset
     mov     word [es:0x0482], 0x003E            ; Keyboard buffer end offset
 
+    pop     bx
     pop     ax
     pop     cx
     pop     di

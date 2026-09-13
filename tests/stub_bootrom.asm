@@ -26,7 +26,7 @@ stub_rom_start:
     mov     cx, 16384
     rep     movsw
 
-    ; Contract 2 handover
+    ; Contract 2 handover (Shadow RAM / 0xF000 mode)
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
@@ -34,7 +34,7 @@ stub_rom_start:
     mov     sp, 0x7000
     cli
 
-    jmp     0x0800:0x0004
+    jmp     0xF000:0x0004
 
 ; Reset vector at F000:FFF0 (offset 0x7F0 from 0xF800)
 times 0x7F0 - ($ - $$) db 0xFF

@@ -16,7 +16,7 @@ int10h_handler:
     push    ax
 
     ; Use Firmware data segment for local operations
-    mov     bx, FW_RAM_SEG
+    mov     bx, cs
     mov     ds, bx
 
     cmp     ah, 0x0E
@@ -383,7 +383,7 @@ vga_hardware_init:
     push    dx
     push    ax
 
-    mov     ax, FW_RAM_SEG
+    mov     ax, cs
     mov     ds, ax
 
     ; 1. Misc Output Register (Port 0x3C2)

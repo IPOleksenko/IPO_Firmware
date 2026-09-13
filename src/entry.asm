@@ -34,12 +34,17 @@ firmware_entry:
     ; 2. Setup Interrupt Vector Table (IVT) and BDA
     call    ivt_setup
 
-    ; 3. Initialize Video Subsystem (Mode 03h: 80x25 text) via our own INT 10h
+    ; 3. Scan PCI Buses for VGA, SATA AHCI, and USB host controllers
+    call    pci_scan_devices
+    mov     si, msg_pci_ready
+    call    bios_log
+
+    ; 4. Initialize Video Subsystem (Mode 03h: 80x25 text) via built-in VGA INT 10h
     mov     ax, 0x0003
     int     0x10
     call    bios_render_header
 
-    ; 4. Log initialization diagnostics to screen and serial
+    ; 5. Log initialization diagnostics to screen and serial
     mov     si, msg_fw_banner
     call    bios_log
     mov     si, msg_ivt_ready
@@ -47,22 +52,46 @@ firmware_entry:
     mov     si, msg_vga_ready
     call    bios_log
 
-    ; 5. Enable A20 Gate
+    ; 6. Enable A20 Gate
     call    a20_enable
     mov     si, msg_a20_ready
     call    bios_log
 
-    ; 6. Detect Memory
+    ; 7. Detect Memory
     call    ensure_memory_detected
     mov     si, msg_mem_ready
     call    bios_log
 
-    ; 7. Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
+    ; 8. Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
     call    ps2_controller_init
     mov     si, msg_kbd_ready
     call    bios_log
 
-    ; 8. Discover bootable disk, load MBR, and hand off control (Contract 3)
+    ; 9. Initialize Modern Storage Subsystems (SATA AHCI & USB)
+    ; Set default drive 0x80 to Legacy ATA PIO
+    xor     ax, ax
+    mov     es, ax
+    mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_ATA_PIO
+
+    ; Try initializing SATA AHCI
+    call    ahci_init
+    jc      .check_usb_storage
+    ; AHCI active: register Drive 0x80 as SATA AHCI
+    mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_SATA_AHCI
+    mov     si, msg_ahci_ready
+    call    bios_log
+
+.check_usb_storage:
+    ; Try initializing USB Mass Storage
+    call    usb_init
+    jc      .storage_init_done
+    ; USB drive active: register Drive 0x82 as USB Flash Drive
+    mov     byte [es:SCRATCH_DRV_TYPE_82], DRV_TYPE_USB_BOT
+    mov     si, msg_usb_ready
+    call    bios_log
+
+.storage_init_done:
+    ; 10. Discover bootable disk, load MBR, and hand off control (Contract 3)
     jmp     chainload_boot
 
 ; =============================================================================
@@ -188,6 +217,10 @@ bios_log_hex_byte:
 ; =============================================================================
 ; Included Modules
 ; =============================================================================
+%include "pci_scan.asm"
+%include "vbios.asm"
+%include "ahci.asm"
+%include "usb_ehci.asm"
 %include "ivt.asm"
 %include "int10.asm"
 %include "int13.asm"
@@ -199,10 +232,13 @@ bios_log_hex_byte:
 ; =============================================================================
 ; Messages & Data
 ; =============================================================================
-msg_fw_banner   db "[IPO_Firmware] BIOS-compatible Firmware initialized at 0x0800:0000", 10, 0
+msg_fw_banner   db "[IPO_Firmware] BIOS-compatible Firmware initialized (Shadow RAM mode)", 10, 0
 msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registered)", 10, 0
 msg_vga_ready   db "[IPO_Firmware] Video Mode 03h (80x25 text) configured", 10, 0
 msg_a20_ready   db "[IPO_Firmware] Fast A20 Gate activated and verified", 10, 0
 msg_mem_ready   db "[IPO_Firmware] Memory map prepared (E820/E801 ready)", 10, 0
 msg_kbd_ready   db "[IPO_Firmware] PS/2 keyboard controller configured (Set 2 -> Set 1 translation)", 10, 0
+msg_pci_ready   db "[IPO_Firmware] PCI bus enumeration completed", 10, 0
+msg_ahci_ready  db "[IPO_Firmware] SATA AHCI controller active (Drive 0x80 linked to SATA)", 10, 0
+msg_usb_ready   db "[IPO_Firmware] USB Mass Storage active (Drive 0x82 linked to USB)", 10, 0
 

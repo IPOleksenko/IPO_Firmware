@@ -4,11 +4,11 @@
 BITS 16
 
 chainload_boot:
-    ; Search for bootable disk across ATA drives 0x80, 0x81, 0x82, 0x83
-    mov     byte [current_drive], 0x80
+    ; Search for bootable disk across ATA drives 0x80, 0x81
+    mov     dl, 0x80
 
 .drive_scan_loop:
-    mov     dl, [current_drive]
+    push    dx                              ; Preserve current drive across calls
 
     ; Print probe message
     mov     si, msg_probing
@@ -18,17 +18,9 @@ chainload_boot:
     mov     si, msg_newline
     call    print_string
 
-    ; Prepare DAP for LBA 0 -> 0x0000:0x7C00
-    mov     word [mbr_dap + 2], 1           ; 1 sector
-    mov     word [mbr_dap + 4], MBR_OFF     ; Offset 0x7C00
-    mov     word [mbr_dap + 6], MBR_SEG     ; Segment 0x0000
-    mov     dword [mbr_dap + 8], 0          ; LBA 0 (low)
-    mov     dword [mbr_dap + 12], 0         ; LBA 0 (high)
-
     ; Call INT 13h (our own disk service!)
-    mov     dl, [current_drive]             ; Ensure DL contains the drive to read!
     push    ds
-    mov     ax, FW_RAM_SEG
+    mov     ax, cs
     mov     ds, ax
     mov     si, mbr_dap
     mov     ah, 0x42
@@ -68,8 +60,9 @@ chainload_boot:
     call    print_string
 
 .try_next_drive:
-    inc     byte [current_drive]
-    cmp     byte [current_drive], 0x82      ; Check 0x80 and 0x81 (Primary Master and Slave)
+    pop     dx                              ; Restore current drive
+    inc     dl                              ; Next drive (0x80 -> 0x81 -> 0x82)
+    cmp     dl, 0x83                        ; Check 0x80, 0x81 (HDD/SATA) and 0x82 (USB Flash)
     jb      .drive_scan_loop
 
     ; No bootable drive found!
@@ -80,7 +73,8 @@ chainload_boot:
     jmp     .halt
 
 .boot_drive_found:
-    mov     dl, [current_drive]
+    pop     dx                              ; Restore boot drive into DL
+    push    dx                              ; Keep safe on stack during logging
     mov     si, msg_booting
     call    bios_log
     mov     al, dl
@@ -95,6 +89,8 @@ chainload_boot:
     mov     word [es:0x0450], 0
     call    update_hw_cursor
 
+    pop     dx                              ; Restore DL = Boot drive number (0x80 for first HDD)
+
     ; -------------------------------------------------------------------------
     ; Contract 3: Standard PC BIOS MBR Handover
     ;   CPU Mode: 16-bit real mode
@@ -104,7 +100,6 @@ chainload_boot:
     ;   SP = 0x7C00
     ;   sti (interrupts enabled)
     ; -------------------------------------------------------------------------
-    mov     dl, [current_drive]
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
@@ -124,9 +119,6 @@ print_string:
 print_hex_byte:
     call    bios_log_hex_byte
     ret
-
-align 4
-current_drive   db 0x80
 
 align 4
 mbr_dap:
