@@ -1,20 +1,56 @@
 ; int15.asm — BIOS System Services (INT 15h)
 ; Implements AX=E820h (Memory Map), AX=E801h (Memory Size), and AX=2401h (A20)
+; Strictly stores all state and dynamic tables in conventional Scratch RAM (0x0000)
+; ZERO writes to CS / Shadow RAM!
 
 BITS 16
 
+%include "contract.inc"
+
 int15h_handler:
     sti
-    cmp     eax, 0x0000E820
-    je      .fn_e820
-    cmp     ax, 0xE801
-    je      .fn_e801
     cmp     ax, 0x2401
     je      .fn_enable_a20
+    cmp     ax, 0xE801
+    je      .fn_e801
+    cmp     eax, 0x0000E820
+    je      .fn_e820
 
     ; Unsupported function
     mov     ah, 0x86
     stc
+    jmp     .exit
+
+; -----------------------------------------------------------------------------
+; AX = 0x2401 — Enable A20 Gate
+; -----------------------------------------------------------------------------
+.fn_enable_a20:
+    call    a20_enable
+    xor     ah, ah
+    clc
+    jmp     .exit
+
+; -----------------------------------------------------------------------------
+; AX = 0xE801 — Get Memory Size for >64M Configurations
+; Output:
+;   AX = CX = Memory between 1MB and 16MB in KB (max 15MB = 15360 = 0x3C00)
+;   BX = DX = Memory between 16MB and 4GB in 64KB blocks
+;   CF = 0
+; -----------------------------------------------------------------------------
+.fn_e801:
+    push    ds
+    xor     bx, bx
+    mov     ds, bx
+    call    ensure_memory_detected
+
+    mov     ax, [ds:SCRATCH_RAM_1_16M]
+    mov     cx, ax
+
+    mov     bx, [ds:SCRATCH_RAM_ABOVE16]
+    mov     dx, bx
+
+    pop     ds
+    clc
     jmp     .exit
 
 ; -----------------------------------------------------------------------------
@@ -32,32 +68,35 @@ int15h_handler:
     cmp     edx, 0x534D4150                 ; Verify 'SMAP' signature
     jne     .e820_fail
     cmp     ecx, 20
-    jb      .e820_fail
+    jae     .e820_param_ok
+.e820_fail:
+    stc
+    jmp     .exit
 
+.e820_param_ok:
     push    ds
     push    si
     push    bx
 
-    mov     ax, cs
-    mov     ds, ax
-
-    ; Ensure dynamic memory size has been detected
+    ; Ensure dynamic memory map has been generated in Scratch RAM
     call    ensure_memory_detected
 
     pop     bx                              ; Restore requested entry index (EBX)
 
-    cmp     ebx, E820_TOTAL_ENTRIES
-    jae     .e820_end_of_list
+    ; Validate EBX index (< 4 entries)
+    cmp     ebx, 4
+    jae     short .e820_end_of_list
 
-    ; Point SI to e820_table[ebx]
-    ; Each entry is 20 bytes
+    ; Point DS:SI to SCRATCH_E820_TABLE + (EBX * 20)
+    xor     ax, ax
+    mov     ds, ax                          ; DS = 0x0000 (Scratch RAM)
     mov     ax, bx
     mov     cx, 20
     mul     cx
     mov     si, ax
-    add     si, e820_table
+    add     si, SCRATCH_E820_TABLE
 
-    ; Copy 20 bytes to ES:DI
+    ; Copy 20 bytes to caller's ES:DI
     push    cx
     cld
     mov     cx, 10                          ; 10 words = 20 bytes
@@ -66,7 +105,7 @@ int15h_handler:
 
     ; Next EBX continuation value
     inc     bx
-    cmp     bx, E820_TOTAL_ENTRIES
+    cmp     bx, 4
     jb      .e820_has_more
     xor     bx, bx                          ; 0 = done
 
@@ -83,42 +122,7 @@ int15h_handler:
 .e820_end_of_list:
     pop     si
     pop     ds
-.e820_fail:
     stc
-    jmp     .exit
-
-; -----------------------------------------------------------------------------
-; AX = 0xE801 — Get Memory Size for >64M Configurations
-; Output:
-;   AX = CX = Memory between 1MB and 16MB in KB (max 15MB = 15360 = 0x3C00)
-;   BX = DX = Memory between 16MB and 4GB in 64KB blocks
-;   CF = 0
-; -----------------------------------------------------------------------------
-.fn_e801:
-    push    ds
-    mov     bx, cs
-    mov     ds, bx
-    call    ensure_memory_detected
-
-    ; AX = memory 1-16MB in KB (15360 KB = 0x3C00)
-    mov     ax, [ram_kb_1_to_16m]
-    mov     cx, ax
-
-    ; BX = memory 16MB+ in 64KB blocks
-    mov     bx, [ram_64k_above_16m]
-    mov     dx, bx
-
-    pop     ds
-    clc
-    jmp     .exit
-
-; -----------------------------------------------------------------------------
-; AX = 0x2401 — Enable A20 Gate
-; -----------------------------------------------------------------------------
-.fn_enable_a20:
-    call    a20_enable
-    xor     ah, ah
-    clc
     jmp     .exit
 
 .exit:
@@ -134,20 +138,30 @@ int15h_handler:
     iret
 
 ; =============================================================================
-; Memory Detection Routine (Standard CMOS primary + QEMU fw_cfg fallback)
+; Memory Detection & Dynamic E820 Table Generator
+; Strictly writes only to Scratch RAM (0x0000:0x0500+)
 ; =============================================================================
 ensure_memory_detected:
     push    eax
     push    edx
     push    bx
     push    cx
+    push    di
+    push    es
+
+    xor     ax, ax
+    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
 
     ; Only detect once
-    cmp     byte [mem_detected_flag], 1
+    cmp     byte [es:SCRATCH_MEM_FLAG], 1
     je      .already_detected
 
-    ; 1. Try standard AT/ATX CMOS registers first (works on physical silicon)
-    ; Read CMOS 0x34 (low), 0x35 (high) = 64KB blocks above 16MB
+    ; Check if Boot_ROM already populated total RAM in Scratch RAM
+    mov     eax, [es:SCRATCH_TOTAL_RAM]
+    test    eax, eax
+    jnz     .have_ram_size
+
+    ; 1. Try CMOS registers 0x34/0x35 (standard on physical ATX PCs)
     mov     al, 0x34
     out     CMOS_INDEX_PORT, al
     in      al, CMOS_DATA_PORT
@@ -156,108 +170,112 @@ ensure_memory_detected:
     mov     al, 0x35
     out     CMOS_INDEX_PORT, al
     in      al, CMOS_DATA_PORT
-    mov     bh, al                          ; BX = blocks above 16MB (64KB blocks)
+    mov     bh, al                          ; BX = blocks above 16MB in 64KB units
 
     test    bx, bx
-    jz      .try_fw_cfg
+    jz      .try_cmos_base
 
     movzx   eax, bx
     shl     eax, 16                         ; * 65536 = bytes above 16MB
-    add     eax, 16 * 1024 * 1024           ; Add base 16 MB
-    jmp     .store_and_compute
+    add     eax, 16 * 1024 * 1024           ; + 16MB base
+    jmp     .have_ram_size
 
-.try_fw_cfg:
-    ; 2. Fallback to QEMU fw_cfg port 0x510 (selector) / 0x511 (data)
-    ; Selector 0x0001 = FW_CFG_RAM_SIZE (64-bit total RAM in bytes)
-    mov     dx, FW_CFG_PORT_SEL
-    mov     ax, FW_CFG_ID_RAM_SIZE
-    out     dx, ax
-
-    mov     dx, FW_CFG_PORT_DATA
-    in      al, dx
+.try_cmos_base:
+    ; 2. Fallback: CMOS registers 0x30/0x31 (1-16MB memory in KB)
+    mov     al, 0x30
+    out     CMOS_INDEX_PORT, al
+    in      al, CMOS_DATA_PORT
     mov     bl, al
-    in      al, dx
-    mov     bh, al
-    in      al, dx
-    mov     cl, al
-    in      al, dx
-    mov     ch, al                          ; CX:BX = low 32 bits of RAM size in bytes
 
-    ; Assemble low 32-bit RAM size
-    push    cx
-    push    bx
-    pop     eax                             ; EAX = total RAM in bytes
+    mov     al, 0x31
+    out     CMOS_INDEX_PORT, al
+    in      al, CMOS_DATA_PORT
+    mov     bh, al                          ; BX = KB between 1MB and 16MB
 
-    ; Validate fw_cfg result (if missing, reads 0xFFFFFFFF or 0)
-    test    eax, eax
-    jz      .use_default_ram
-    cmp     eax, 0xFFFFFFFF
-    je      .use_default_ram
-    jmp     .store_and_compute
+    test    bx, bx
+    jz      .default_ram
 
-.use_default_ram:
-    ; Default: 128 MB
-    mov     eax, 128 * 1024 * 1024
+    movzx   eax, bx
+    shl     eax, 10                         ; * 1024 = bytes
+    add     eax, 1024 * 1024                ; + 1MB base
+    jmp     .have_ram_size
 
-.store_and_compute:
-    mov     [total_ram_bytes], eax
+.default_ram:
+    mov     eax, 128 * 1024 * 1024          ; 128 MB default
 
-    ; Extended RAM above 1MB (Base 0x100000):
-    ; Length = total_ram_bytes - 1MB (0x100000)
-    mov     edx, eax
-    sub     edx, 0x100000
-    mov     [e820_entry2_len], edx
+.have_ram_size:
+    ; Store total RAM in Scratch RAM
+    mov     [es:SCRATCH_TOTAL_RAM], eax
 
-    ; Compute 1-16MB in KB (max 15MB = 15360 KB = 0x3C00)
-    mov     word [ram_kb_1_to_16m], 0x3C00
+    ; 1-16MB in KB (max 15MB = 15360 = 0x3C00)
+    mov     word [es:SCRATCH_RAM_1_16M], 0x3C00
 
-    ; Compute 16MB+ in 64KB blocks
+    ; Above 16MB in 64KB blocks
     mov     edx, eax
     cmp     edx, 16 * 1024 * 1024
     jbe     .no_above_16m
     sub     edx, 16 * 1024 * 1024
-    shr     edx, 16                         ; Divide by 65536
-    mov     [ram_64k_above_16m], dx
-    jmp     .mark_done
+    shr     edx, 16
+    mov     [es:SCRATCH_RAM_ABOVE16], dx
+    jmp     .build_e820
 
 .no_above_16m:
-    mov     word [ram_64k_above_16m], 0
+    mov     word [es:SCRATCH_RAM_ABOVE16], 0
 
-.mark_done:
-    mov     byte [mem_detected_flag], 1
+.build_e820:
+    ; =========================================================================
+    ; Construct Dynamic E820 Table in Scratch RAM at SCRATCH_E820_TABLE (0x0598)
+    ; =========================================================================
+    mov     di, SCRATCH_E820_TABLE
+
+    ; Entry 0: Usable Conventional RAM (0x00000 - 0x9FC00, 639 KB)
+    mov     dword [es:di + 0],  0x00000000   ; Base low
+    mov     dword [es:di + 4],  0x00000000   ; Base high
+    mov     dword [es:di + 8],  0x0009FC00   ; Length low (639 KB)
+    mov     dword [es:di + 12], 0x00000000   ; Length high
+    mov     dword [es:di + 16], 1            ; Type 1 = Usable
+
+    ; Entry 1: Reserved EBDA + Video RAM + BIOS ROM (0x9FC00 - 0x100000, 385 KB)
+    mov     dword [es:di + 20], 0x0009FC00   ; Base low
+    mov     dword [es:di + 24], 0x00000000   ; Base high
+    mov     dword [es:di + 28], 0x00060400   ; Length low (385 KB)
+    mov     dword [es:di + 32], 0x00000000   ; Length high
+    mov     dword [es:di + 36], 2            ; Type 2 = Reserved
+
+    ; Entry 2: Usable Extended RAM above 1MB (0x100000 onwards, clamped to TOLUD 0xE0000000)
+    mov     dword [es:di + 40], 0x00100000   ; Base low (1 MB)
+    mov     dword [es:di + 44], 0x00000000   ; Base high
+    mov     edx, eax
+    cmp     edx, 0xE0000000                  ; Clamp to TOLUD (0xE0000000 PCI MMIO hole)
+    jbe     .ram_clamped
+    mov     edx, 0xE0000000
+.ram_clamped:
+    cmp     edx, 0x00100000
+    jae     .ram_has_extended
+    xor     edx, edx
+    jmp     .store_entry2_len
+.ram_has_extended:
+    sub     edx, 0x00100000                  ; Length = Clamped RAM - 1MB
+.store_entry2_len:
+    mov     dword [es:di + 48], edx          ; Length low
+    mov     dword [es:di + 52], 0x00000000   ; Length high
+    mov     dword [es:di + 56], 1            ; Type 1 = Usable
+
+    ; Entry 3: Reserved PCI MMIO / APIC / SPI Flash (0xE0000000 - 0xFFFFFFFF, 512 MB)
+    mov     dword [es:di + 60], 0xE0000000   ; Base low
+    mov     dword [es:di + 64], 0x00000000   ; Base high
+    mov     dword [es:di + 68], 0x20000000   ; Length low (512 MB)
+    mov     dword [es:di + 72], 0x00000000   ; Length high
+    mov     dword [es:di + 76], 2            ; Type 2 = Reserved
+
+    mov     word [es:SCRATCH_E820_COUNT], 4
+    mov     byte [es:SCRATCH_MEM_FLAG], 1
 
 .already_detected:
+    pop     es
+    pop     di
     pop     cx
     pop     bx
     pop     edx
     pop     eax
     ret
-
-; =============================================================================
-; E820 Address Map Data
-; =============================================================================
-E820_TOTAL_ENTRIES  equ 3
-
-align 4
-mem_detected_flag   db 0
-total_ram_bytes     dd 0
-ram_kb_1_to_16m     dw 0x3C00
-ram_64k_above_16m   dw 0
-
-align 4
-e820_table:
-    ; Entry 0: Usable Conventional RAM (0x00000 - 0x9FC00, 639 KB)
-    dq      0x0000000000000000              ; Base address = 0
-    dq      0x000000000009FC00              ; Length = 639 KB
-    dd      1                               ; Type 1 = Usable RAM
-
-    ; Entry 1: Reserved EBDA + Video RAM + BIOS ROM (0x9FC00 - 0x100000)
-    dq      0x000000000009FC00              ; Base address = 0x9FC00
-    dq      0x0000000000060400              ; Length = 385 KB
-    dd      2                               ; Type 2 = Reserved
-
-    ; Entry 2: Usable Extended RAM above 1MB (0x100000 onwards)
-    dq      0x0000000000100000              ; Base address = 1 MB (0x100000)
-e820_entry2_len:
-    dq      0x0000000007F00000              ; Default 127 MB (dynamically patched)
-    dd      1                               ; Type 1 = Usable RAM

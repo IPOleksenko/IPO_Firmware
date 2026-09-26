@@ -22,7 +22,7 @@ MBR_MAGIC           equ 0xAA55      ; 0x55, 0xAA at offset 510-511
 
 ; Stack layout
 FW_STACK_SEG        equ 0x0000
-FW_STACK_PTR        equ 0x7000      ; Below MBR load area (0x7000 down to 0x6000)
+FW_STACK_PTR        equ 0x7C00      ; Stack below MBR load area (grows down 0x7C00 -> 0x7000)
 
 ; =============================================================================
 ; 2. Hardware / I/O Ports
@@ -105,10 +105,22 @@ SCRATCH_USB_BAR0    equ 0x0554      ; dword: USB MMIO/IO Base address
 SCRATCH_VGA_FOUND   equ 0x0560      ; byte: 1 = VGA controller detected
 SCRATCH_VGA_BUS     equ 0x0561      ; byte: PCI bus
 SCRATCH_VGA_DEVFN   equ 0x0562      ; byte: PCI dev/fn
-SCRATCH_VGA_ROMBAR  equ 0x0564      ; dword: Expansion ROM BAR address
+SCRATCH_VGA_ROMBAR  equ 0x0564      ; dword: VGA Expansion ROM BAR
+SCRATCH_VBIOS_ACTIVE equ 0x0568     ; byte: 1 = external VBIOS executed, INT 42h active
+SCRATCH_NVME_FOUND    equ 0x0580    ; byte: 1 = NVMe detected
+SCRATCH_NVME_BUS      equ 0x0581    ; byte: PCI bus
+SCRATCH_NVME_DEVFN    equ 0x0582    ; byte: PCI dev/fn
+SCRATCH_NVME_BAR0     equ 0x0584    ; dword: NVMe BAR0 MMIO address
+SCRATCH_NVME_NSID     equ 0x0588    ; dword: active Namespace ID (usually 1)
+SCRATCH_NVME_SEC_SIZE equ 0x058C    ; word: sector size in bytes (512)
+SCRATCH_NVME_SQ_TAIL  equ 0x058E    ; byte: IO SQ tail index
+SCRATCH_NVME_CQ_HEAD  equ 0x058F    ; byte: IO CQ head index
+SCRATCH_NVME_CQ_PHASE equ 0x0592    ; byte: IO CQ expected phase bit (1 or 0)
+SCRATCH_E820_COUNT    equ 0x0590    ; word: number of valid E820 entries
+SCRATCH_E820_TABLE    equ 0x0598    ; buffer: dynamically generated E820 table
 
 ; Drive Types for INT 13h dispatch (stored in Scratch RAM)
-SCRATCH_DRV_TYPE_80 equ 0x0570      ; byte: 0=None, 1=ATA_PIO, 2=SATA_AHCI, 3=USB_BOT
+SCRATCH_DRV_TYPE_80 equ 0x0570      ; byte: 0=None, 1=ATA_PIO, 2=SATA_AHCI, 3=USB_BOT, 4=NVME
 SCRATCH_DRV_TYPE_81 equ 0x0571      ; byte
 SCRATCH_DRV_TYPE_82 equ 0x0572      ; byte
 SCRATCH_DRV_TYPE_83 equ 0x0573      ; byte
@@ -117,12 +129,42 @@ DRV_TYPE_NONE       equ 0x00
 DRV_TYPE_ATA_PIO    equ 0x01
 DRV_TYPE_SATA_AHCI  equ 0x02
 DRV_TYPE_USB_BOT    equ 0x03
+DRV_TYPE_NVME       equ 0x04
 
 ; Fixed safe buffers for AHCI and USB transfers in lower conventional memory
-; Region 0x1000 - 0x2FFF is safely above BDA/Scratch and below Firmware Stack (0x6000),
+; Region 0x1000 - 0x2FFF is safely above BDA/Scratch and below Firmware Stack,
 ; completely free from OS Kernel (loaded at 0x10000) and MBR (0x7C00).
 AHCI_CMD_LIST_ADDR  equ 0x1000      ; 1KB Command List (1024-byte aligned)
 AHCI_RX_FIS_ADDR    equ 0x1400      ; 256 bytes Received FIS (256-byte aligned)
 AHCI_CMD_TAB_ADDR   equ 0x1800      ; Command Table + PRDT (128-byte aligned)
+
+; Dedicated 4KB page-aligned NVMe queues in lower memory (0x3000-0x6FFF)
+NVME_ADMIN_SQ_ADDR  equ 0x3000
+NVME_ADMIN_CQ_ADDR  equ 0x4000
+NVME_IO_SQ_ADDR     equ 0x5000
+NVME_IO_CQ_ADDR     equ 0x6000
+
+; =============================================================================
+; POST Diagnostic Port 0x80 Codes
+; =============================================================================
+POST_PORT           equ 0x80
+
+; Early milestones and warnings
+POST_WARN_SPD_FAIL  equ 0x1F        ; Warning: SPD read failed on SMBus, falling back to default
+
+; Standard Firmware milestones
+POST_FW_ENTRY       equ 0x20        ; Firmware entry point reached (0xF000:0x0004)
+POST_PCI_SCAN       equ 0x21        ; PCI bus enumeration completed
+POST_IVT_INIT       equ 0x22        ; Real-mode IVT installed
+POST_ACPI_INIT      equ 0x23        ; ACPI tables installed in EBDA
+POST_VGA_INIT       equ 0x24        ; Video initialized (VBIOS or native text mode)
+POST_A20_INIT       equ 0x25        ; Fast A20 Gate activated
+POST_MEM_MAP        equ 0x26        ; E820 / E801 memory map prepared
+POST_KBD_INIT       equ 0x27        ; 8042 PS/2 keyboard controller initialized
+POST_STORAGE_OK     equ 0x28        ; Storage controllers initialized
+POST_DISK_SPINUP_WAIT equ 0x29      ; Waiting for drive spin-up (ATA/AHCI)
+POST_CHAINLOAD      equ 0x30        ; Commenced drive scan for bootable media
+POST_MBR_FOUND      equ 0x31        ; Valid MBR signature 0xAA55 loaded at 0x7C00
+POST_BOOT_JUMP      equ 0xF0        ; Handing off control to OS Bootloader
 
 %endif ; CONTRACT_INC

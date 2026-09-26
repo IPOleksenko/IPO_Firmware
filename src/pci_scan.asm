@@ -101,6 +101,68 @@ pci_scan_devices:
     test    ax, ax
     jz      .fn_absent
 
+    ; Check for Power Management / ACPI controllers to enable ACPI I/O (PMBA = 0x0600)
+    cmp     eax, 0x71138086                 ; Intel PIIX4 PM (i440FX)
+    jne     .check_q35_pm
+
+    ; 1. PIIX4 PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+    mov     eax, esi
+    or      eax, 0x40
+    mov     ecx, 0x00000601
+    call    pci_write_dword
+
+    ; 2. PIIX4 PMREGMISC (reg 0x80): set bit 0 (PMIOSE - PM I/O Space Enable)
+    mov     eax, esi
+    or      eax, 0x80
+    call    pci_read_dword
+    or      al, 0x01
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x80
+    call    pci_write_dword
+
+    ; 3. Enable I/O Space in Command register (offset 0x04)
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_read_dword
+    or      al, 0x01
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_write_dword
+    jmp     .pm_done
+
+.check_q35_pm:
+    cmp     eax, 0x29188086                 ; Intel ICH9 LPC / ACPI (Q35)
+    jne     .pm_done
+
+    ; 1. ICH9 PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+    mov     eax, esi
+    or      eax, 0x40
+    mov     ecx, 0x00000601
+    call    pci_write_dword
+
+    ; 2. ICH9 ACPI_CTRL (reg 0x44): set bit 7 (ACPI_EN)
+    mov     eax, esi
+    or      eax, 0x44
+    call    pci_read_dword
+    or      al, 0x80
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x44
+    call    pci_write_dword
+
+    ; 3. Enable I/O Space in Command register (offset 0x04)
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_read_dword
+    or      al, 0x01
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_write_dword
+
+.pm_done:
     ; Read Class Code, Subclass, ProgIF (reg 0x08)
     ; Reg 0x08: [Class(31:24) | Subclass(23:16) | ProgIF(15:8) | RevID(7:0)]
     mov     eax, esi
@@ -134,7 +196,7 @@ pci_scan_devices:
 
 .check_storage:
     ; -------------------------------------------------------------------------
-    ; 2. Check for Mass Storage (Class 0x01) -> SATA AHCI (SubClass 0x06)
+    ; 2. Check for Mass Storage (Class 0x01)
     ; -------------------------------------------------------------------------
     mov     eax, edi
     shr     eax, 16
@@ -143,11 +205,16 @@ pci_scan_devices:
     jne     .check_usb
 
     cmp     al, PCI_SUBCLASS_AHCI
-    jne     .check_usb
+    je      .found_ahci
 
-    ; AHCI controller found!
+    ; Check for NVMe: Subclass 0x08 (Non-Volatile Memory)
+    cmp     al, 0x08
+    je      .found_nvme
+    jmp     .check_usb
+
+.found_ahci:
     cmp     byte [es:SCRATCH_AHCI_FOUND], 1
-    je      .check_usb                      ; Already recorded first AHCI
+    je      .check_usb
 
     mov     byte [es:SCRATCH_AHCI_FOUND], 1
     mov     byte [es:SCRATCH_AHCI_BUS], bh
@@ -156,15 +223,15 @@ pci_scan_devices:
     or      al, cl
     mov     byte [es:SCRATCH_AHCI_DEVFN], al
 
-    ; Read BAR5 (ABAR - AHCI Base Address Register at offset 0x24)
+    ; Read BAR5 (ABAR at offset 0x24)
     mov     eax, esi
     or      eax, 0x24
     call    pci_read_dword
-    and     eax, 0xFFFFFFF0                 ; Clear lower 4 bits (MMIO flags)
-    test    eax, eax
-    jnz     .ahci_bar_ok
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .ahci_bar_ok
 
-    ; BAR5 is unassigned at reset — assign safe 32-bit MMIO base 0xFEB00000
+    ; BAR5 unassigned — assign 0xFEB00000
     mov     ecx, 0xFEB00000
     mov     eax, esi
     or      eax, 0x24
@@ -178,7 +245,53 @@ pci_scan_devices:
     mov     eax, esi
     or      eax, 0x04
     call    pci_read_dword
-    or      al, 0x07                        ; Enable I/O + Mem + Bus Master
+    or      al, 0x07
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_write_dword
+    jmp     .check_usb
+
+.found_nvme:
+    cmp     byte [es:SCRATCH_NVME_FOUND], 1
+    je      .check_usb
+
+    mov     byte [es:SCRATCH_NVME_FOUND], 1
+    mov     byte [es:SCRATCH_NVME_BUS], bh
+    mov     al, bl
+    shl     al, 3
+    or      al, cl
+    mov     byte [es:SCRATCH_NVME_DEVFN], al
+
+    ; Read 64-bit BAR0 at reg 0x10 and 0x14
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_read_dword
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .nvme_bar_ok
+
+    ; Assign 0xFEB40000
+    mov     ecx, 0xFEB40000
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_write_dword
+    mov     eax, 0xFEB40000
+
+.nvme_bar_ok:
+    mov     dword [es:SCRATCH_NVME_BAR0], eax
+
+    ; Clear high 32 bits of 64-bit BAR (reg 0x14)
+    mov     ecx, 0
+    mov     eax, esi
+    or      eax, 0x14
+    call    pci_write_dword
+
+    ; Enable Bus Master (bit 2) and Memory Space (bit 1)
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_read_dword
+    or      al, 0x06
     mov     ecx, eax
     mov     eax, esi
     or      eax, 0x04
@@ -221,9 +334,9 @@ pci_scan_devices:
     mov     eax, esi
     or      eax, 0x10
     call    pci_read_dword
-    and     eax, 0xFFFFFFF0                 ; MMIO address
-    test    eax, eax
-    jnz     .usb_bar_ok
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .usb_bar_ok
 
     ; BAR0 unassigned — assign 0xFEB80000
     mov     ecx, 0xFEB80000

@@ -33,8 +33,10 @@ SRCS    := $(SRC)/entry.asm \
            $(SRC)/pci_scan.asm \
            $(SRC)/vbios.asm \
            $(SRC)/ahci.asm \
+           $(SRC)/nvme.asm \
            $(SRC)/usb_ehci.asm \
            $(SRC)/ivt.asm \
+           $(SRC)/acpi.asm \
            $(SRC)/int10.asm \
            $(SRC)/int13.asm \
            $(SRC)/int15.asm \
@@ -66,7 +68,8 @@ ROM_BIN   ?= $(ROM_BOOT)
 # Target OS storage media (optional argument: make run OS=/path/to/disk.img)
 OS       ?=
 OS_IMAGE ?= $(OS)
-MEM      ?= 8192
+CPU      ?= pentium3
+MEM      ?= 512
 
 # Determine active ROM for emulation:
 # If Boot ROM is provided, build RUN_ROM; otherwise run standalone FIRMWARE_ROM
@@ -77,7 +80,7 @@ TARGET_ROM := $(RUN_ROM)
 endif
 
 # Base QEMU flags for running Firmware BIOS
-QEMU_FLAGS := -M pc -m $(MEM) -bios $(TARGET_ROM) -serial stdio
+QEMU_FLAGS := -M pc -cpu $(CPU) -m $(MEM) -bios $(TARGET_ROM) -serial stdio
 
 # Audio configuration for PC Speaker
 AUDIO ?= pa

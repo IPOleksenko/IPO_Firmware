@@ -6,6 +6,35 @@ BITS 16
 int10h_handler:
     sti
     push    ds
+    push    ax
+    xor     ax, ax
+    mov     ds, ax
+    cmp     byte [ds:SCRATCH_VBIOS_ACTIVE], 1
+    pop     ax
+    pop     ds
+    jne     .native_int10
+
+    ; VBIOS is active: mirror AH=0x0E (Teletype) to serial COM1
+    cmp     ah, 0x0E
+    jne     .call_vbios
+
+    cmp     al, 10
+    jne     .v_tx
+    push    ax
+    mov     al, 13
+    call    serial_tx_char
+    pop     ax
+.v_tx:
+    push    ax
+    call    serial_tx_char
+    pop     ax
+
+.call_vbios:
+    int     0x42
+    iret
+
+.native_int10:
+    push    ds
     push    es
     push    bp
     push    si
@@ -64,9 +93,14 @@ int10h_handler:
     cmp     cl, 0x08                        ; Backspace (\b)
     je      .tt_bs
 
-    ; Normal printable character: write to VGA text buffer (0xB800)
+    ; Normal printable character: write to VGA text buffer (0xB800) if VGA present
     push    es
     push    dx
+    xor     bx, bx
+    mov     es, bx
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    jne     .skip_vga_write
+
     mov     bx, VGA_TEXT_SEG
     mov     es, bx                          ; ES = 0xB800
 
@@ -84,6 +118,8 @@ int10h_handler:
     mov     al, cl                          ; Character saved in CL
     mov     ah, 0x07
     stosw
+
+.skip_vga_write:
     pop     dx
     pop     es
 
@@ -205,9 +241,9 @@ int10h_handler:
     mov     cx, [es:0x0460]
 
     ; Store results in caller's saved registers on stack
-    ; Stack layout: [bp+2]=bx, [bp+4]=cx, [bp+6]=dx, ...
-    mov     [esp + 4], cx                   ; Return CX
-    mov     [esp + 2], dx                   ; Return DX
+    ; Stack layout: [esp+0]=ax, [esp+2]=bx, [esp+4]=cx, [esp+6]=dx
+    mov     [esp + 4], cx                   ; Return CX (start/end scan line)
+    mov     [esp + 6], dx                   ; Return DX (row/column)
     jmp     .done
 
 .done:
@@ -230,6 +266,12 @@ update_hw_cursor:
     push    ax
     push    bx
     push    dx
+    push    es
+
+    xor     ax, ax
+    mov     es, ax
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    jne     .cursor_done
 
     movzx   ax, dh
     shl     ax, 4
@@ -255,12 +297,21 @@ update_hw_cursor:
     mov     al, bl
     out     dx, al
 
+.cursor_done:
+    pop     es
     pop     dx
     pop     bx
     pop     ax
     ret
 
 vga_clear_screen:
+    push    es
+    xor     ax, ax
+    mov     es, ax
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    pop     es
+    jne     .vga_clr_done
+
     push    es
     push    di
     push    cx
@@ -277,9 +328,17 @@ vga_clear_screen:
     pop     cx
     pop     di
     pop     es
+.vga_clr_done:
     ret
 
 vga_scroll_up:
+    push    es
+    xor     ax, ax
+    mov     es, ax
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    pop     es
+    jne     .vga_scroll_done
+
     push    ds
     push    es
     push    si
@@ -310,12 +369,20 @@ vga_scroll_up:
     pop     si
     pop     es
     pop     ds
+.vga_scroll_done:
     ret
 
 ; =============================================================================
 ; Render BIOS Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
 ; =============================================================================
 bios_render_header:
+    push    es
+    xor     ax, ax
+    mov     es, ax
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    pop     es
+    jne     .header_skip
+
     push    es
     push    si
     push    di
@@ -365,6 +432,7 @@ bios_render_header:
     pop     di
     pop     si
     pop     es
+.header_skip:
     ret
 
 bios_str_title  db "IPO_Firmware", 0
@@ -375,6 +443,13 @@ bios_str_author db "by IPOleksenko", 0
 ; Programs Sequencer, CRTC, GC, AC, DAC, loads 8x16 font, and enables display.
 ; =============================================================================
 vga_hardware_init:
+    push    es
+    xor     ax, ax
+    mov     es, ax
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    pop     es
+    jne     .vga_hw_done
+
     push    es
     push    ds
     push    si
@@ -540,6 +615,7 @@ vga_hardware_init:
     pop     si
     pop     ds
     pop     es
+.vga_hw_done:
     ret
 
 ; =============================================================================

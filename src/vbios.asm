@@ -70,6 +70,26 @@ vbios_init:
     cmp     word [es:0], 0xAA55
     jne     .no_vbios
 
+    ; -------------------------------------------------------------------------
+    ; 2b. Verify Option ROM Length & Checksum
+    ;     Byte 2 = length in 512-byte blocks. Sum of all bytes mod 256 must be 0.
+    ; -------------------------------------------------------------------------
+    movzx   ecx, byte [es:2]
+    test    ecx, ecx
+    jz      .no_vbios
+    shl     ecx, 9                          ; Length in bytes (ecx = count * 512)
+
+    xor     dl, dl                          ; Checksum accumulator
+    xor     di, di
+.chksum_loop:
+    add     dl, [es:di]
+    inc     di
+    dec     ecx
+    jnz     .chksum_loop
+
+    test    dl, dl
+    jnz     .no_vbios                       ; Checksum invalid -> do not execute!
+
     ; Valid Option ROM detected!
     mov     si, msg_dbg_vbios_call
     call    bios_log
@@ -85,6 +105,24 @@ vbios_init:
     retf                                    ; Far jump to 0xC000:0x0003 (simulates far call)
 
 .vbios_ret:
+    ; Restore Firmware segments in case VBIOS altered them
+    mov     ax, cs
+    mov     ds, ax
+    xor     ax, ax
+    mov     es, ax
+
+    ; Save VBIOS INT 10h vector (installed by VBIOS at 0x0000:0x0040) to INT 42h (0x0000:0x0108)
+    mov     eax, [es:0x0040]
+    mov     [es:0x0108], eax
+
+    ; Set SCRATCH_VBIOS_ACTIVE flag
+    mov     byte [es:SCRATCH_VBIOS_ACTIVE], 1
+
+    ; Reinstall Firmware int10h_handler at INT 10h (0x0000:0x0040)
+    ; This enables teletype mirroring to COM1 while delegating rendering to INT 42h
+    mov     word [es:0x0040], int10h_handler
+    mov     word [es:0x0042], cs
+
     mov     si, msg_dbg_vbios_done
     call    bios_log
     ; VBIOS initialized! Graphics card is active and text mode is ready.

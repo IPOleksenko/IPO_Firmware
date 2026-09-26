@@ -9,16 +9,42 @@ BITS 16
 ; =============================================================================
 ahci_enable_unreal_mode:
     push    eax
+    push    ebx
     push    ds
 
     cli
-    ; Load GDT with 4GB flat data descriptor
-    lgdt    [cs:unreal_gdt_ptr]
+    ; Build 16-byte temporary GDT on stack:
+    ; Selector 0x08: Flat 4GB Data (Base=0, Limit=4GB, G=1, D/B=0, P=1, DPL=0, S=1, Type=0x2)
+    ; Value: 0x008F9200_0000FFFF
+    push    dword 0x008F9200
+    push    dword 0x0000FFFF
+    ; Selector 0x00: Null Descriptor
+    push    dword 0
+    push    dword 0
 
-    ; Enter protected mode briefly to load FS limit
+    ; Compute 32-bit linear address of GDT on stack: (SS << 4) + SP
+    mov     bx, ss
+    movzx   ebx, bx
+    shl     ebx, 4
+    movzx   eax, sp
+    add     ebx, eax                ; EBX = linear base of GDT
+
+    ; Build 6-byte GDTR structure on stack
+    push    ebx                     ; Linear Base (4 bytes)
+    push    word 15                 ; Limit = 16 - 1 = 15 (2 bytes)
+
+    ; Load GDTR
+    mov     bx, sp
+    lgdt    [ss:bx]
+
+    ; Clean up GDTR from stack (6 bytes)
+    add     sp, 6
+
+    ; Enter protected mode briefly to load FS descriptor cache
     mov     eax, cr0
     or      al, 0x01
     mov     cr0, eax
+    jmp     short $+2               ; Serialize CPU pipeline
 
     ; Load FS with flat 4GB selector (0x08)
     mov     ax, 0x08
@@ -28,19 +54,16 @@ ahci_enable_unreal_mode:
     mov     eax, cr0
     and     al, 0xFE
     mov     cr0, eax
+    jmp     FW_RAM_SEG:.real_mode           ; Far jump to flush prefetch queue and reload CS
+.real_mode:
+
+    ; Clean up GDT from stack (16 bytes)
+    add     sp, 16
 
     pop     ds
+    pop     ebx
     pop     eax
     ret
-
-align 4
-unreal_gdt:
-    dq      0x0000000000000000              ; Null descriptor (0x00)
-    dq      0x008F92000000FFFF              ; Flat 4GB Data: Base=0, Limit=4GB, G=1, D=0 (0x08)
-
-unreal_gdt_ptr:
-    dw      $ - unreal_gdt - 1              ; Limit
-    dd      0x000F0000 + unreal_gdt         ; Base in Shadow RAM (0xF000:unreal_gdt)
 
 ; =============================================================================
 ; ahci_init — Initialize AHCI Controller discovered by PCI scan
@@ -199,7 +222,6 @@ ahci_read_sectors:
     mov     esi, AHCI_CMD_TAB_ADDR
 
     ; Zero FIS memory
-    mov     dword [cs:.zero_dw], 0
     a32 mov dword [fs:esi + 0x00], 0
     a32 mov dword [fs:esi + 0x04], 0
     a32 mov dword [fs:esi + 0x08], 0
@@ -283,6 +305,3 @@ ahci_read_sectors:
     mov     ah, 0x04                        ; Sector read error
     stc
     ret
-
-align 4
-.zero_dw    dd 0

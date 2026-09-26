@@ -27,7 +27,15 @@ usb_init:
     ; Check if EHCI was discovered by PCI scan
     cmp     byte [es:SCRATCH_USB_FOUND], 1
     jne     .usb_fail
+    cmp     byte [es:SCRATCH_USB_TYPE], 1       ; 1 = EHCI
+    je      .is_ehci
+    cmp     byte [es:SCRATCH_USB_TYPE], 2       ; 2 = xHCI
+    jne     .usb_fail
+    mov     si, msg_xhci_note
+    call    bios_log
+    jmp     .usb_fail
 
+.is_ehci:
     mov     esi, [es:SCRATCH_USB_BAR0]      ; ESI = EHCI Base Address
     test    esi, esi
     jz      .usb_fail
@@ -462,3 +470,5 @@ usb_set_configuration_1:
 
     popad
     ret
+
+msg_xhci_note db "  [USB] xHCI controller detected; EHCI driver skipped.", 10, 0
