@@ -120,6 +120,10 @@ int13h_handler:
     pop     ax                          ; Restore AL = count
     movzx   cx, al                      ; CX = count
 
+    ; Restore original DL (drive number) from stack: [sp + 4] = saved DX
+    mov     bp, sp
+    mov     dl, [bp + 4]
+
     ; Check Drive Type
     push    ds
     xor     ax, ax
@@ -375,6 +379,8 @@ ata_read_one_sector:
     push    dx
     push    ax
     push    cx
+    push    bp
+    mov     bp, sp
 
     ; 1. Wait until drive is not busy (BSY=0)
     mov     dx, ATA_PRI_STATUS
@@ -387,7 +393,7 @@ ata_read_one_sector:
     shr     eax, 24
     and     al, 0x0F
     mov     ah, 0xE0                        ; Master (0xE0)
-    test    byte [esp + 4], 0x01            ; Test original drive passed in DL on stack
+    test    byte [bp + 6], 0x01             ; Test original drive passed in DL on stack
     jz      .drive_select_ok
     mov     ah, 0xF0                        ; Slave (0xF0)
 .drive_select_ok:
@@ -441,6 +447,7 @@ ata_read_one_sector:
     cld
     rep     insw
 
+    pop     bp
     pop     cx
     pop     ax
     pop     dx
@@ -460,6 +467,7 @@ ata_read_one_sector:
 
 .ata_err:
     mov     al, ah
+    pop     bp
     pop     cx
     pop     dx                          ; Discard saved AX
     pop     dx                          ; Restore saved DX
@@ -485,7 +493,7 @@ ata_wait_not_busy:
     ret
 
 ata_wait_ready:
-    push    bx
+    push    ebx
     push    ecx
     push    es
 
@@ -539,14 +547,14 @@ ata_wait_ready:
 .timeout:
     pop     es
     pop     ecx
-    pop     bx
+    pop     ebx
     stc
     ret
 
 .rdy_ok:
     pop     es
     pop     ecx
-    pop     bx
+    pop     ebx
     clc
     ret
 

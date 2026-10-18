@@ -76,6 +76,7 @@ int15h_handler:
 .e820_param_ok:
     push    ds
     push    si
+    push    di
     push    bx
 
     ; Ensure dynamic memory map has been generated in Scratch RAM
@@ -110,6 +111,7 @@ int15h_handler:
     xor     bx, bx                          ; 0 = done
 
 .e820_has_more:
+    pop     di
     pop     si
     pop     ds
 
@@ -120,6 +122,7 @@ int15h_handler:
     jmp     .exit
 
 .e820_end_of_list:
+    pop     di
     pop     si
     pop     ds
     stc

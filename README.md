@@ -40,11 +40,11 @@ OS Handover (Contract 3: Standard PC BIOS MBR Handover)
 ## 🛠️ Build Commands
 
 ```bash
-# Compile firmware binary and construct default standalone ROM
-make
+# Install required build tools, QEMU, and hardware flashing dependencies
+./install-dependencies.sh
 
-# Run automated headless verification test in QEMU (validates IVT, INT 10h/13h/15h, MBR chainload)
-make test
+# Compile firmware binary and construct production ROM
+make
 
 # Clean all build artifacts
 make clean
@@ -57,13 +57,13 @@ make clean
 `make run` allows isolated firmware execution, custom Boot ROM integration, and booting operating system storage media:
 
 ### 1. Standalone Execution (No arguments)
-Runs firmware with built-in stub bootloader and no attached OS:
+Runs firmware in QEMU using standalone production ROM (`build/firmware.bin`):
 ```bash
 make run
 ```
 
 ### 2. Running with an External Boot ROM
-Embeds `firmware.bin` into a specified external Boot ROM:
+Embeds the firmware payload into a specified external Boot ROM (e.g. `IPO_Boot_Rom`) under Contract 2:
 ```bash
 make run BOOTROM=path/to/bootrom.bin
 ```
@@ -94,11 +94,8 @@ make run AUDIO=none ...   # Disable audio connection
 
 | File | Size | Description |
 | :--- | :--- | :--- |
-| `build/firmware.bin` | < 32 KB | Assembled BIOS firmware payload (starts with `'IPOF'` signature) |
-| `build/firmware_rom.bin` | 262,144 B | Default 256 KB ROM embedding `firmware.bin` and an internal stub Boot ROM |
-| `build/firmware_run_rom.bin` | 262,144 B | Custom 256 KB ROM generated when embedding an external Boot ROM |
-| `build/test_rom.bin` | 262,144 B | Dedicated testing ROM image used by `make test` |
-| `build/test_mbr.img` | 1,048,576 B | 1 MB test disk image embedding MBR validation code for `make test` |
+| `build/firmware.bin` | < 32 KB | Assembled BIOS firmware payload (starts with `'IPOF'` signature). Standard input artifact consumed by `IPO_Boot_ROM`. |
+| `build/firmware.rom` | 256 KB+ | Complete BIOS ROM image for direct QEMU execution (`make run`) or physical flash chip programming. |
 
 ---
 

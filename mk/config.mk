@@ -3,6 +3,7 @@
 # =============================================================================
 
 ASM     := nasm
+PYTHON  := python3
 QEMU    := qemu-system-i386
 
 # =============================================================================
@@ -13,17 +14,17 @@ SRC     := src
 BUILD   := build
 INC     := include
 TOOLS   := tools
-TESTS   := tests
 
 # =============================================================================
 #                 OUTPUT ARTIFACTS
 # =============================================================================
 
+# Firmware payload binary (strictly < 32 KB, consumed by IPO_Boot_ROM)
 FIRMWARE_BIN := $(BUILD)/firmware.bin
-FIRMWARE_ROM := $(BUILD)/firmware_rom.bin
-RUN_ROM      := $(BUILD)/firmware_run_rom.bin
-TEST_ROM     := $(BUILD)/test_rom.bin
-TEST_MBR     := $(BUILD)/test_mbr.img
+
+# Full ROM image for direct QEMU execution or physical chip flashing
+FIRMWARE_ROM := $(BUILD)/firmware.rom
+TARGET_ROM   := $(FIRMWARE_ROM)
 
 # =============================================================================
 #                 SOURCES
@@ -57,7 +58,7 @@ ASM_FLAGS := -f bin -I$(INC) -I$(SRC)
 #                 EMULATION RUN ARGUMENTS
 # =============================================================================
 
-# Boot ROM binary to embed into ROM (optional: make run BOOTROM=/path/to/bootrom.bin)
+# External Boot ROM binary to embed into ROM (optional: make run BOOTROM=/path/to/bootrom.bin)
 BOOTROM   ?=
 BOOT_ROM  ?= $(BOOTROM)
 RAMBOOT   ?= $(BOOT_ROM)
@@ -70,14 +71,6 @@ OS       ?=
 OS_IMAGE ?= $(OS)
 CPU      ?= pentium3
 MEM      ?= 512
-
-# Determine active ROM for emulation:
-# If Boot ROM is provided, build RUN_ROM; otherwise run standalone FIRMWARE_ROM
-ifeq ($(ROM_BIN),)
-TARGET_ROM := $(FIRMWARE_ROM)
-else
-TARGET_ROM := $(RUN_ROM)
-endif
 
 # Base QEMU flags for running Firmware BIOS
 QEMU_FLAGS := -M pc -cpu $(CPU) -m $(MEM) -bios $(TARGET_ROM) -serial stdio

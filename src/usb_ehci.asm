@@ -314,11 +314,12 @@ usb_read_sectors:
     jz      .read_success                   ; Succeeded!
 
 .read_failed_try:
-    dec     word [esp]                      ; Decrement attempt count
+    mov     bp, sp
+    dec     word [bp]                       ; Decrement attempt count
     jnz     .retry_read_loop
 
     ; All retries exhausted
-    add     esp, 2                          ; Clean stack
+    add     sp, 2                           ; Clean stack
     pop     es
     pop     ds
     popad
@@ -327,7 +328,7 @@ usb_read_sectors:
     ret
 
 .read_success:
-    add     esp, 2                          ; Clean stack
+    add     sp, 2                           ; Clean stack
     pop     es
     pop     ds
     popad

@@ -241,9 +241,10 @@ int10h_handler:
     mov     cx, [es:0x0460]
 
     ; Store results in caller's saved registers on stack
-    ; Stack layout: [esp+0]=ax, [esp+2]=bx, [esp+4]=cx, [esp+6]=dx
-    mov     [esp + 4], cx                   ; Return CX (start/end scan line)
-    mov     [esp + 6], dx                   ; Return DX (row/column)
+    ; Stack layout: [bp+0]=ax, [bp+2]=bx, [bp+4]=cx, [bp+6]=dx
+    mov     bp, sp
+    mov     [bp + 4], cx                   ; Return CX (start/end scan line)
+    mov     [bp + 6], dx                   ; Return DX (row/column)
     jmp     .done
 
 .done:

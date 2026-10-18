@@ -9,6 +9,6 @@ include mk/firmware.mk
 include mk/run.mk
 include mk/clean.mk
 
-all: firmware $(FIRMWARE_ROM)
+all: firmware
 
-.PHONY: all firmware run test clean
+.PHONY: all firmware run clean

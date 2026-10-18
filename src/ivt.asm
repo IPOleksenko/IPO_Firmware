@@ -111,6 +111,13 @@ ivt_setup:
     mov     word [es:0x0480], 0x001E            ; Keyboard buffer start offset
     mov     word [es:0x0482], 0x003E            ; Keyboard buffer end offset
 
+    ; 7. Initialize PIT (8254) Channel 0: Mode 3 (Square Wave), 18.2 Hz (divisor 65536 = 0)
+    mov     al, 0x36                            ; Channel 0, lobyte/hibyte, Mode 3, binary
+    out     0x43, al
+    xor     al, al
+    out     0x40, al                            ; Divisor low = 0x00
+    out     0x40, al                            ; Divisor high = 0x00 (65536)
+
     pop     bx
     pop     ax
     pop     cx

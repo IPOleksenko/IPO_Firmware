@@ -26,6 +26,7 @@ firmware_entry:
     ; Setup stack
     xor     ax, ax
     mov     ss, ax
+    xor     esp, esp
     mov     sp, FW_STACK_PTR
 
     ; 1. Initialize serial port
@@ -89,10 +90,11 @@ firmware_entry:
     call    bios_log
 
     ; 10. Initialize Modern Storage Subsystems (SATA AHCI, NVMe, USB)
-    ; Set default drive 0x80 to Legacy ATA PIO
+    ; Set default drive 0x80 and 0x81 to Legacy ATA PIO
     xor     ax, ax
     mov     es, ax
     mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_ATA_PIO
+    mov     byte [es:SCRATCH_DRV_TYPE_81], DRV_TYPE_ATA_PIO
 
     ; Try initializing SATA AHCI
     call    ahci_init

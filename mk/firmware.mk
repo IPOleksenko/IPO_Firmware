@@ -4,51 +4,33 @@
 
 firmware: $(FIRMWARE_BIN)
 
+# 1. Compile pure firmware payload (< 32 KB) conforming to Contract 1 & Contract 2
 $(FIRMWARE_BIN): $(SRCS)
 	@mkdir -p $(BUILD)
 	$(ASM) $(ASM_FLAGS) $(SRC)/entry.asm -o $@
 	@size=$$(stat -c %s $@); \
-	echo "[IPO_Firmware] Binary generated: $@ ($$size bytes)"; \
+	echo "[IPO_Firmware] Firmware payload generated: $@ ($$size bytes)"; \
 	if [ $$size -gt 32768 ]; then \
-		echo "ERROR: firmware.bin exceeds 32KB limit ($$size bytes)!" >&2; \
+		echo "ERROR: firmware.bin exceeds 32KB payload limit ($$size bytes)!" >&2; \
 		exit 1; \
 	fi
 
-# Build bootable ROM embedding this firmware for standalone execution / testing
-$(FIRMWARE_ROM): $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $(TOOLS)/build_firmware.sh
-	$(TOOLS)/build_firmware.sh $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $@
+ifneq ($(ROM_BIN),)
+.PHONY: $(FIRMWARE_ROM)
+endif
 
-# Build customized ROM embedding this firmware into specified Boot ROM
-$(RUN_ROM): $(FIRMWARE_BIN) $(TOOLS)/build_firmware.sh
+# 2. Build bootable ROM image for QEMU emulation or hardware flashing
+$(FIRMWARE_ROM): $(FIRMWARE_BIN) $(TOOLS)/build_rom.py
+	@mkdir -p $(BUILD)
 	@rom_target="$(ROM_BIN)"; \
-	if [ ! -f "$$rom_target" ]; then \
-		echo "ERROR: Boot ROM image '$$rom_target' not found!" >&2; \
-		echo "Usage: make run [BOOTROM=path/to/bootrom.bin] [OS=path/to/disk.img]" >&2; \
-		exit 1; \
-	fi; \
-	$(TOOLS)/build_firmware.sh $(FIRMWARE_BIN) "$$rom_target" $@
+	if [ -n "$$rom_target" ]; then \
+		if [ ! -f "$$rom_target" ]; then \
+			echo "ERROR: Boot ROM image '$$rom_target' not found!" >&2; \
+			exit 1; \
+		fi; \
+		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_BIN) $@ --bootrom "$$rom_target"; \
+	else \
+		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_BIN) $@; \
+	fi
 
-# -----------------------------------------------------------------------------
-# Standalone Testing Artifacts
-# -----------------------------------------------------------------------------
-$(BUILD)/stub_bootrom.bin: $(TESTS)/stub_bootrom.asm
-	@mkdir -p $(BUILD)
-	$(ASM) -f bin -o $@ $<
-
-$(BUILD)/stub_mbr.bin: $(TESTS)/stub_mbr.asm
-	@mkdir -p $(BUILD)
-	$(ASM) -f bin -o $@ $<
-
-$(TEST_MBR): $(BUILD)/stub_mbr.bin
-	@mkdir -p $(BUILD)
-	cp $< $@
-	truncate -s 1M $@
-
-$(TEST_ROM): $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $(TOOLS)/build_firmware.sh
-	$(TOOLS)/build_firmware.sh $(FIRMWARE_BIN) $(BUILD)/stub_bootrom.bin $@
-
-test: $(TEST_ROM) $(TEST_MBR)
-	$(TESTS)/run_qemu_test.sh $(TEST_ROM) $(TEST_MBR)
-
-.PHONY: firmware test
-
+.PHONY: firmware
