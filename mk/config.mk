@@ -12,6 +12,7 @@ QEMU    := qemu-system-i386
 
 SRC     := src
 BUILD   := build
+BIN     := $(BUILD)/.bin
 INC     := include
 TOOLS   := tools
 
@@ -20,7 +21,7 @@ TOOLS   := tools
 # =============================================================================
 
 # Firmware payload binary (strictly < 32 KB, consumed by IPO_Boot_ROM)
-FIRMWARE_BIN := $(BUILD)/firmware.bin
+FIRMWARE_BIN := $(BIN)/firmware.bin
 
 # Full ROM image for direct QEMU execution or physical chip flashing
 FIRMWARE_ROM := $(BUILD)/firmware.rom

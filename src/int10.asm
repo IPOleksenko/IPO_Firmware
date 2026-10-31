@@ -23,6 +23,8 @@ int10h_handler:
     push    ax
     mov     al, 13
     call    serial_tx_char
+    mov     ah, 0x0E
+    int     0x42
     pop     ax
 .v_tx:
     push    ax

@@ -57,7 +57,7 @@ make clean
 `make run` allows isolated firmware execution, custom Boot ROM integration, and booting operating system storage media:
 
 ### 1. Standalone Execution (No arguments)
-Runs firmware in QEMU using standalone production ROM (`build/firmware.bin`):
+Runs firmware in QEMU using standalone production ROM (`build/firmware.rom`):
 ```bash
 make run
 ```
@@ -94,7 +94,7 @@ make run AUDIO=none ...   # Disable audio connection
 
 | File | Size | Description |
 | :--- | :--- | :--- |
-| `build/firmware.bin` | < 32 KB | Assembled BIOS firmware payload (starts with `'IPOF'` signature). Standard input artifact consumed by `IPO_Boot_ROM`. |
+| `build/.bin/firmware.bin` | < 32 KB | Assembled BIOS firmware payload (starts with `'IPOF'` signature). Standard input artifact consumed by `IPO_Boot_ROM`. |
 | `build/firmware.rom` | 256 KB+ | Complete BIOS ROM image for direct QEMU execution (`make run`) or physical flash chip programming. |
 
 ---

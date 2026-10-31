@@ -2,11 +2,11 @@
 #                 FIRMWARE BUILD RULES
 # =============================================================================
 
-firmware: $(FIRMWARE_BIN)
+firmware: $(FIRMWARE_ROM)
 
 # 1. Compile pure firmware payload (< 32 KB) conforming to Contract 1 & Contract 2
 $(FIRMWARE_BIN): $(SRCS)
-	@mkdir -p $(BUILD)
+	@mkdir -p $(BIN)
 	$(ASM) $(ASM_FLAGS) $(SRC)/entry.asm -o $@
 	@size=$$(stat -c %s $@); \
 	echo "[IPO_Firmware] Firmware payload generated: $@ ($$size bytes)"; \
