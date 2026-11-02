@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-build_rom.py — Constructs a production-ready x86 PC-AT BIOS ROM image
+build_rom.py — Constructs a production-ready x86 PC-AT firmware ROM image
 Target: Real Hardware (EPROM / Flash ROM 27C020, SST39SF020, W29C020) & Emulators (QEMU)
 
 Modes:
 1. Standalone Production ROM (no --bootrom):
    - Layout of 64KB bank (mapped to F000:0000 - F000:FFFF):
-       * Offset 0x0000: Firmware Payload (Magic 'IPOF' at 0x0000, entry at 0x0004)
+       * Offset 0x0000: Firmware Payload (Magic 'IPO' at 0x0000, entry at 0x0004)
        * Offset 0xFFF0: Power-on CPU Reset Vector (jmp far F000:0004 -> EA 04 00 00 F0)
        * Offset 0xFFF5: Release Date string "MM/DD/YY" (8 bytes ASCII: "01/01/26")
        * Offset 0xFFFD: Sub-model byte (0x00)
@@ -15,8 +15,8 @@ Modes:
    - 4x 64KB banks mirrored across 256KB for physical ROM chip and QEMU compatibility.
 
 2. Embedded Boot ROM Mode (--bootrom <path>):
-   - Embeds firmware payload at offset 0x30000 (196608, F000:0000) inside the provided
-     external Boot ROM (e.g. IPO_Boot_Rom) adhering to Contract 2.
+   - Embeds firmware payload in the final 64 KiB window at the address mapped to
+     F000:0000 inside the provided external Boot ROM image.
 """
 
 import sys
@@ -28,7 +28,7 @@ ROM_SIZE  = 262144      # 256 KB (4 x 64 KB banks)
 FW_OFFSET = 196608      # 0x30000 (offset for F000:0000 in 256KB ROM)
 
 def main():
-    parser = argparse.ArgumentParser(description="Construct BIOS ROM image")
+    parser = argparse.ArgumentParser(description="Construct firmware ROM image")
     parser.add_argument("raw_fw", help="Input raw firmware binary (assembled from entry.asm)")
     parser.add_argument("output_rom", help="Output ROM file path")
     parser.add_argument("--bootrom", help="Path to external Boot ROM binary to embed firmware into", default=None)
@@ -49,7 +49,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output_rom)), exist_ok=True)
 
     if args.bootrom:
-        # Embedded Boot ROM mode (Contract 2: Boot ROM -> Firmware)
+        # Embedded image mode
         if not os.path.exists(args.bootrom):
             print(f"ERROR: Boot ROM binary '{args.bootrom}' not found!", file=sys.stderr)
             sys.exit(1)
@@ -73,7 +73,7 @@ def main():
         print(f"[build_rom] Created Boot ROM-embedded ROM: {args.output_rom} ({len(rom_data)} bytes)")
         print(f"            - Embedded Boot ROM: {args.bootrom} ({len(bootrom_data)} bytes / {len(bootrom_data)//1024} KB)")
         print(f"            - Firmware offset:   0x{fw_offset:08X} ({fw_offset} bytes)")
-        print(f"            - Firmware size:     {len(fw_code)} bytes (Magic 'IPOF' at 0xF000:0x0000)")
+        print(f"            - Firmware size:     {len(fw_code)} bytes (Magic 'IPO' at 0xF000:0x0000)")
     else:
         # Standalone Production ROM mode (direct hardware reset vector)
         bank = bytearray(b"\xFF" * BANK_SIZE)
@@ -82,7 +82,7 @@ def main():
         # Offset 0xFFF0 (physical 0xFFFF0): Power-On CPU Reset Vector
         bank[0xFFF0:0xFFF5] = b"\xEA\x04\x00\x00\xF0"
 
-        # Offset 0xFFF5: Standard BIOS Date (MM/DD/YY)
+        # Offset 0xFFF5: Standard firmware date (MM/DD/YY)
         bank[0xFFF5:0xFFFD] = b"01/01/26"
 
         # Offset 0xFFFD: Sub-model byte

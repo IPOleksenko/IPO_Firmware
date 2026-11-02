@@ -4,7 +4,7 @@
 
 BITS 16
 
-%include "contract.inc"
+%include "boot_constants.inc"
 
 EBDA_SEG        equ 0x9FC0
 EBDA_RSDP_OFF   equ 0x0000      ; Physical 0x9FC00
@@ -31,8 +31,8 @@ acpi_init_tables:
     mov     byte  [es:di + 0x09], 0              ; Checksum (computed below)
     mov     dword [es:di + 0x0A], 'IPO '         ; OEMID
     mov     word  [es:di + 0x0E], '  '
-    mov     dword [es:di + 0x10], 'IPOF'         ; OEM Table ID
-    mov     dword [es:di + 0x14], 'W   '
+    mov     dword [es:di + 0x10], 'IPO '         ; OEM Table ID
+    mov     dword [es:di + 0x14], '    '
     mov     dword [es:di + 0x18], 1              ; OEM Revision
     mov     dword [es:di + 0x1C], 'IPO '         ; Creator ID
     mov     dword [es:di + 0x20], 1              ; Creator Revision
@@ -66,8 +66,8 @@ acpi_init_tables:
     mov     byte  [es:di + 0x09], 0              ; Checksum (computed below)
     mov     dword [es:di + 0x0A], 'IPO '         ; OEMID
     mov     word  [es:di + 0x0E], '  '
-    mov     dword [es:di + 0x10], 'IPOF'         ; OEM Table ID
-    mov     dword [es:di + 0x14], 'W   '
+    mov     dword [es:di + 0x10], 'IPO '         ; OEM Table ID
+    mov     dword [es:di + 0x14], '    '
     mov     dword [es:di + 0x18], 1              ; OEM Revision
     mov     dword [es:di + 0x1C], 'IPO '         ; Creator ID
     mov     dword [es:di + 0x20], 1              ; Creator Revision

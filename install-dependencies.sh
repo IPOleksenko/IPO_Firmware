@@ -20,7 +20,7 @@ REQUIRED_PACKAGES=(
     "qemu-system-x86"    # QEMU emulator (qemu-system-i386)
     "qemu-system-gui"    # Audio and graphical display modules for QEMU
     "qemu-utils"         # Disk image utilities (qemu-img)
-    "flashrom"           # Utility to flash firmware onto physical BIOS chips
+    "flashrom"           # Utility to flash firmware onto physical ROM chips
     "xxd"                # Hex viewer for inspecting ROM binaries
 )
 

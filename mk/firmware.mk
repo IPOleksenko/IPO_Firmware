@@ -2,10 +2,10 @@
 #                 FIRMWARE BUILD RULES
 # =============================================================================
 
-firmware: $(FIRMWARE_ROM)
+firmware: $(FIRMWARE_BIN)
 
-# 1. Compile pure firmware payload (< 32 KB) conforming to Contract 1 & Contract 2
-$(FIRMWARE_BIN): $(SRCS)
+# 1. Compile firmware payload (up to 32 KiB) for the documented boot handoff interface
+$(FIRMWARE_PAYLOAD): $(SRCS)
 	@mkdir -p $(BIN)
 	$(ASM) $(ASM_FLAGS) $(SRC)/entry.asm -o $@
 	@size=$$(stat -c %s $@); \
@@ -16,11 +16,11 @@ $(FIRMWARE_BIN): $(SRCS)
 	fi
 
 ifneq ($(ROM_BIN),)
-.PHONY: $(FIRMWARE_ROM)
+.PHONY: $(FIRMWARE_BIN)
 endif
 
-# 2. Build bootable ROM image for QEMU emulation or hardware flashing
-$(FIRMWARE_ROM): $(FIRMWARE_BIN) $(TOOLS)/build_rom.py
+# 2. Build bootable binary image for QEMU emulation or hardware flashing
+$(FIRMWARE_BIN): $(FIRMWARE_PAYLOAD) $(TOOLS)/build_rom.py
 	@mkdir -p $(BUILD)
 	@rom_target="$(ROM_BIN)"; \
 	if [ -n "$$rom_target" ]; then \
@@ -28,9 +28,9 @@ $(FIRMWARE_ROM): $(FIRMWARE_BIN) $(TOOLS)/build_rom.py
 			echo "ERROR: Boot ROM image '$$rom_target' not found!" >&2; \
 			exit 1; \
 		fi; \
-		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_BIN) $@ --bootrom "$$rom_target"; \
+		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_PAYLOAD) $@ --bootrom "$$rom_target"; \
 	else \
-		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_BIN) $@; \
+		$(PYTHON) $(TOOLS)/build_rom.py $(FIRMWARE_PAYLOAD) $@; \
 	fi
 
 .PHONY: firmware

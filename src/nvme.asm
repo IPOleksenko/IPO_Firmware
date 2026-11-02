@@ -1,10 +1,10 @@
-; nvme.asm — NVMe (NVM Express) Storage Driver for x86 BIOS
+; nvme.asm — NVMe (NVM Express) Storage Driver for x86 Firmware
 ; Implements controller init, Admin/IO queue setup, and sector reading via DMA.
 ; Uses Flat Real Mode (Unreal Mode with FS descriptor limit = 4GB) to access MMIO.
 
 BITS 16
 
-%include "contract.inc"
+%include "boot_constants.inc"
 
 ; =============================================================================
 ; nvme_init — Initialize NVMe Controller discovered by PCI scan

@@ -4,15 +4,15 @@
 BITS 16
 ORG 0x0000
 
-%include "contract.inc"
+%include "boot_constants.inc"
 
 ; =============================================================================
 ; Offset 0x0000: Magic Signature Header (Validated by Boot_ROM)
 ; =============================================================================
-dd      FW_MAGIC                            ; 0x464F5049 ("IPOF")
+dd      FW_MAGIC                            ; 0x004F5049 ("IPO")
 
 ; =============================================================================
-; Offset 0x0004: Entry Point (Boot_ROM jumps here under Contract 2)
+; Offset 0x0004: Firmware entry point
 ; =============================================================================
 firmware_entry:
     cli
@@ -41,7 +41,7 @@ firmware_entry:
     ; 4. Scan PCI Buses for VGA, SATA AHCI, NVMe, and USB host controllers
     call    pci_scan_devices
     mov     si, msg_pci_ready
-    call    bios_log
+    call    fw_log
 
     ; 5. Initialize Video Subsystem (Mode 03h: 80x25 text) if VGA present
     xor     ax, ax
@@ -49,45 +49,45 @@ firmware_entry:
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
     jne     .skip_vga_init
 
-    ; Check for Option ROM (VBIOS) at 0xC000
-    call    vbios_init
+    ; Check for a Video Option ROM at 0xC000
+    call    video_option_rom_init
 
     ; Set Video Mode 03h (80x25 text mode) unconditionally
-    ; If VBIOS is active, this calls VBIOS via INT 42h
-    ; If VBIOS is absent, this calls our native int10h_handler
+    ; If a Video Option ROM is active, this calls it via INT 42h
+    ; Otherwise, this calls our native int10h_handler
     mov     ax, 0x0003
     int     0x10
 
-    call    bios_render_header
+    call    fw_render_header
 .skip_vga_init:
 
     ; 6. Log initialization diagnostics to screen and serial
     mov     si, msg_fw_banner
-    call    bios_log
+    call    fw_log
     mov     si, msg_ivt_ready
-    call    bios_log
+    call    fw_log
     mov     si, msg_acpi_ready
-    call    bios_log
+    call    fw_log
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
     jne     .skip_vga_msg
     mov     si, msg_vga_ready
-    call    bios_log
+    call    fw_log
 .skip_vga_msg:
 
     ; 7. Enable A20 Gate
     call    a20_enable
     mov     si, msg_a20_ready
-    call    bios_log
+    call    fw_log
 
     ; 8. Detect Memory
     call    ensure_memory_detected
     mov     si, msg_mem_ready
-    call    bios_log
+    call    fw_log
 
     ; 9. Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
     call    ps2_controller_init
     mov     si, msg_kbd_ready
-    call    bios_log
+    call    fw_log
 
     ; 10. Initialize Modern Storage Subsystems (SATA AHCI, NVMe, USB)
     ; Set default drive 0x80 and 0x81 to Legacy ATA PIO
@@ -102,7 +102,7 @@ firmware_entry:
     ; AHCI active: register Drive 0x80 as SATA AHCI
     mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_SATA_AHCI
     mov     si, msg_ahci_ready
-    call    bios_log
+    call    fw_log
 
 .check_nvme_storage:
     ; Try initializing NVMe Storage
@@ -119,7 +119,7 @@ firmware_entry:
     mov     byte [es:SCRATCH_DRV_TYPE_81], DRV_TYPE_NVME
 .nvme_log:
     mov     si, msg_nvme_ready
-    call    bios_log
+    call    fw_log
 
 .check_usb_storage:
     ; Try initializing USB Mass Storage
@@ -128,10 +128,10 @@ firmware_entry:
     ; USB drive active: register Drive 0x82 as USB Flash Drive
     mov     byte [es:SCRATCH_DRV_TYPE_82], DRV_TYPE_USB_BOT
     mov     si, msg_usb_ready
-    call    bios_log
+    call    fw_log
 
 .storage_init_done:
-    ; 11. Discover bootable disk, load MBR, and hand off control (Contract 3)
+    ; 11. Discover bootable disk, load MBR, and hand off control
     jmp     chainload_boot
 
 ; =============================================================================
@@ -222,9 +222,9 @@ serial_print:
     ret
 
 ; =============================================================================
-; BIOS Dual Logger (COM1 Serial + VGA Teletype via INT 10h)
+; Firmware Dual Logger (COM1 Serial + VGA Teletype via INT 10h)
 ; =============================================================================
-bios_log:
+fw_log:
     push    si
     push    ax
     push    bx
@@ -242,7 +242,7 @@ bios_log:
     pop     si
     ret
 
-bios_log_hex_byte:
+fw_log_hex_byte:
     push    ax
     push    bx
     push    dx
@@ -277,7 +277,7 @@ bios_log_hex_byte:
 ; Included Modules
 ; =============================================================================
 %include "pci_scan.asm"
-%include "vbios.asm"
+%include "video_option_rom.asm"
 %include "ahci.asm"
 %include "nvme.asm"
 %include "usb_ehci.asm"
@@ -293,7 +293,7 @@ bios_log_hex_byte:
 ; =============================================================================
 ; Messages & Data
 ; =============================================================================
-msg_fw_banner   db "[IPO_Firmware] BIOS-compatible Firmware initialized (Shadow RAM mode)", 10, 0
+msg_fw_banner   db "[IPO_Firmware] Firmware initialized (Shadow RAM mode)", 10, 0
 msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registered)", 10, 0
 msg_acpi_ready  db "[IPO_Firmware] ACPI 1.0 tables installed (RSDP in EBDA, RSDT, MADT)", 10, 0
 msg_vga_ready   db "[IPO_Firmware] Video Mode 03h (80x25 text) configured", 10, 0
@@ -304,4 +304,3 @@ msg_pci_ready   db "[IPO_Firmware] PCI bus enumeration completed", 10, 0
 msg_ahci_ready  db "[IPO_Firmware] SATA AHCI controller active (Drive 0x80 linked to SATA)", 10, 0
 msg_nvme_ready  db "[IPO_Firmware] NVMe controller active (NVM Express storage drive linked)", 10, 0
 msg_usb_ready   db "[IPO_Firmware] USB Mass Storage active (Drive 0x82 linked to USB)", 10, 0
-

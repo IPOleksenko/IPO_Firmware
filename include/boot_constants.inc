@@ -1,9 +1,9 @@
-; contract.inc — Contract constants for IPO_Firmware
+; boot_constants.inc — Firmware and boot constants
 ; Target Architecture: x86 (16-bit Real Mode)
 ; Execution Mode: Shadow RAM at 0xF000:0x0000
 
-%ifndef CONTRACT_INC
-%define CONTRACT_INC
+%ifndef BOOT_CONSTANTS_INC
+%define BOOT_CONSTANTS_INC
 
 ; =============================================================================
 ; 1. Firmware Memory Layout (Shadow RAM Mode)
@@ -13,9 +13,9 @@
 ; Boot_ROM copies ROM content to DRAM at 0xF0000 and locks PAM read-only
 FW_RAM_SEG          equ 0xF000      ; Shadow RAM segment (was 0x0800)
 FW_ENTRY_OFF        equ 0x0004      ; Entry point offset (immediately after 4-byte magic)
-FW_MAGIC            equ 0x464F5049  ; "IPOF" in little-endian dword
+FW_MAGIC            equ 0x004F5049  ; "IPO" in little-endian dword
 
-; MBR load destination (Contract 3)
+; MBR load destination
 MBR_SEG             equ 0x0000
 MBR_OFF             equ 0x7C00
 MBR_MAGIC           equ 0xAA55      ; 0x55, 0xAA at offset 510-511
@@ -75,7 +75,7 @@ PCI_PROGIF_EHCI     equ 0x20
 PCI_PROGIF_XHCI     equ 0x30
 
 ; =============================================================================
-; 3. BIOS Data Area (BDA) Addresses (Segment 0x0040)
+; 3. BDA Addresses (Segment 0x0040)
 ; =============================================================================
 BDA_SEG             equ 0x0040
 
@@ -106,7 +106,7 @@ SCRATCH_VGA_FOUND   equ 0x0560      ; byte: 1 = VGA controller detected
 SCRATCH_VGA_BUS     equ 0x0561      ; byte: PCI bus
 SCRATCH_VGA_DEVFN   equ 0x0562      ; byte: PCI dev/fn
 SCRATCH_VGA_ROMBAR  equ 0x0564      ; dword: VGA Expansion ROM BAR
-SCRATCH_VBIOS_ACTIVE equ 0x0568     ; byte: 1 = external VBIOS executed, INT 42h active
+SCRATCH_VIDEO_ROM_ACTIVE equ 0x0568 ; byte: 1 = external Video Option ROM executed, INT 42h active
 SCRATCH_NVME_FOUND    equ 0x0580    ; byte: 1 = NVMe detected
 SCRATCH_NVME_BUS      equ 0x0581    ; byte: PCI bus
 SCRATCH_NVME_DEVFN    equ 0x0582    ; byte: PCI dev/fn
@@ -157,7 +157,7 @@ POST_FW_ENTRY       equ 0x20        ; Firmware entry point reached (0xF000:0x000
 POST_PCI_SCAN       equ 0x21        ; PCI bus enumeration completed
 POST_IVT_INIT       equ 0x22        ; Real-mode IVT installed
 POST_ACPI_INIT      equ 0x23        ; ACPI tables installed in EBDA
-POST_VGA_INIT       equ 0x24        ; Video initialized (VBIOS or native text mode)
+POST_VGA_INIT       equ 0x24        ; Video initialized (Option ROM or native text mode)
 POST_A20_INIT       equ 0x25        ; Fast A20 Gate activated
 POST_MEM_MAP        equ 0x26        ; E820 / E801 memory map prepared
 POST_KBD_INIT       equ 0x27        ; 8042 PS/2 keyboard controller initialized
@@ -167,4 +167,4 @@ POST_CHAINLOAD      equ 0x30        ; Commenced drive scan for bootable media
 POST_MBR_FOUND      equ 0x31        ; Valid MBR signature 0xAA55 loaded at 0x7C00
 POST_BOOT_JUMP      equ 0xF0        ; Handing off control to OS Bootloader
 
-%endif ; CONTRACT_INC
+%endif ; BOOT_CONSTANTS_INC

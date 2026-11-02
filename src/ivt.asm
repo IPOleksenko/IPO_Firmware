@@ -1,10 +1,10 @@
 ; ivt.asm — Interrupt Vector Table (IVT) and BDA Setup
 ; Populates all 256 interrupt vectors at 0x0000:0x0000 with proper hardware
-; EOI handlers and standard BIOS services (INT 10h, 11h, 12h, 13h, 14h, 15h, 16h, 17h, 1Ah, 1Ch).
+; EOI handlers and standard PC interrupt services (INT 10h, 11h, 12h, 13h, 14h, 15h, 16h, 17h, 1Ah, 1Ch).
 
 BITS 16
 
-%include "contract.inc"
+%include "boot_constants.inc"
 
 ivt_setup:
     push    es
@@ -56,7 +56,7 @@ ivt_setup:
     mov     word [es:0x0024], int09h_keyboard_handler
     mov     word [es:0x0026], bx
 
-    ; 5. Register Implemented BIOS Service Interrupt Handlers
+    ; 5. Register implemented firmware interrupt handlers
     ; INT 10h (Video Services) — Vector 0x10 * 4 = 0x0040
     mov     word [es:0x0040], int10h_handler
     mov     word [es:0x0042], bx
@@ -97,7 +97,7 @@ ivt_setup:
     mov     word [es:0x0070], default_int_handler
     mov     word [es:0x0072], bx
 
-    ; 6. Setup Standard BDA (BIOS Data Area) at 0x0040:0x0000 (0x0400)
+    ; 6. Setup standard BDA at 0x0040:0x0000 (0x0400)
     mov     word [es:0x0400], 0x03F8            ; COM1 base I/O port address
     mov     word [es:0x040E], 0x9FC0            ; EBDA Base Segment (0x9FC0:0x0000)
     mov     word [es:0x0410], 0x4223            ; Equipment word (color 80x25, mouse, coprocessor, floppy)
@@ -257,7 +257,7 @@ int14h_handler:
     iret
 
 ; =============================================================================
-; INT 16h: Keyboard BIOS Services
+; INT 16h: Keyboard Services
 ; =============================================================================
 int16h_handler:
     sti

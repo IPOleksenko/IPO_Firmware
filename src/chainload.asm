@@ -1,10 +1,10 @@
 ; chainload.asm — Discovers bootable disk, reads MBR to 0x7C00, and jumps
-; Contract 3 fulfillment
+; Firmware MBR handoff
 
 BITS 16
 
 chainload_boot:
-    ; Search for bootable disk across ATA drives 0x80, 0x81
+    ; Search firmware drive numbers 0x80-0x82 (ATA/AHCI/NVMe and USB)
     mov     dl, 0x80
 
 .drive_scan_loop:
@@ -62,12 +62,12 @@ chainload_boot:
 .try_next_drive:
     pop     dx                              ; Restore current drive
     inc     dl                              ; Next drive (0x80 -> 0x81 -> 0x82)
-    cmp     dl, 0x83                        ; Check 0x80, 0x81 (HDD/SATA) and 0x82 (USB Flash)
+    cmp     dl, 0x83                        ; Stop after checking 0x80, 0x81, and 0x82
     jb      .drive_scan_loop
 
     ; No bootable drive found!
     mov     si, msg_no_boot
-    call    bios_log
+    call    fw_log
 .halt:
     hlt
     jmp     .halt
@@ -76,11 +76,11 @@ chainload_boot:
     pop     dx                              ; Restore boot drive into DL
     push    dx                              ; Keep safe on stack during logging
     mov     si, msg_booting
-    call    bios_log
+    call    fw_log
     mov     al, dl
-    call    bios_log_hex_byte
+    call    fw_log_hex_byte
     mov     si, msg_dots
-    call    bios_log
+    call    fw_log
 
     ; Clear screen and reset cursor so booted OS has a clean console
     call    vga_clear_screen
@@ -92,7 +92,7 @@ chainload_boot:
     pop     dx                              ; Restore DL = Boot drive number (0x80 for first HDD)
 
     ; -------------------------------------------------------------------------
-    ; Contract 3: Standard PC BIOS MBR Handover
+    ; Standard PC-compatible MBR handoff
     ;   CPU Mode: 16-bit real mode
     ;   CS:IP = 0x0000:0x7C00
     ;   DL = Boot drive number (0x80 for first HDD)
@@ -111,14 +111,14 @@ chainload_boot:
     jmp     MBR_SEG:MBR_OFF
 
 ; =============================================================================
-; Helper Print Utilities using bios_log
+; Helper Print Utilities using fw_log
 ; =============================================================================
 print_string:
-    call    bios_log
+    call    fw_log
     ret
 
 print_hex_byte:
-    call    bios_log_hex_byte
+    call    fw_log_hex_byte
     ret
 
 align 4

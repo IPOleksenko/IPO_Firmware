@@ -32,7 +32,7 @@ usb_init:
     cmp     byte [es:SCRATCH_USB_TYPE], 2       ; 2 = xHCI
     jne     .usb_fail
     mov     si, msg_xhci_note
-    call    bios_log
+    call    fw_log
     jmp     .usb_fail
 
 .is_ehci:

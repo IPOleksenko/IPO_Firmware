@@ -1,23 +1,23 @@
 # IPO_Firmware
 
-Independent bare-metal x86 BIOS-compatible Firmware service layer for QEMU and PC-AT compatible machines.
+Independent bare-metal x86 Firmware service layer for QEMU and PC-AT compatible machines.
 
 ---
 
 ## 📋 Architecture & Runtime Services
 
-`IPO_Firmware` executes in write-protected Shadow RAM at `0xF000:0x0004` (or `0x0800:0000` in chainload mode), receiving control from an early hardware reset loader (Boot ROM) under **Contract 2**. It provides standard PC BIOS runtime interrupt services and performs automated multi-bus storage discovery and MBR handover under **Contract 3**.
+`IPO_Firmware` executes in write-protected Shadow RAM at `0xF000:0x0004`, receiving control from a compatible external Boot ROM. It provides PC-compatible runtime interrupt services and performs automated multi-bus storage discovery before handing control to an MBR.
 
 ```text
 Boot ROM Handover (CS:IP = 0xF000:0x0004, Shadow RAM)
   │
   ▼
-Low-Level BIOS Services Setup
+Low-Level Firmware Services Setup
   ├─ IVT Installation: Registers INT 10h, INT 12h, INT 13h, INT 15h, INT 16h, INT 1Ah
-  ├─ BIOS Data Area (BDA, 0x0040:0x0000) initialization & timer baseline
-  ├─ Extended BIOS Data Area (EBDA, 0x9FC00) & ACPI 1.0 tables (RSDP, RSDT, MADT)
+  ├─ BDA (0x0040:0x0000) initialization & timer baseline
+  ├─ Extended data area (EBDA, 0x9FC00) & ACPI 1.0 tables (RSDP, RSDT, MADT)
   ├─ PCI Bus Enumeration: Discovers VGA, AHCI, NVMe, USB, ATA controllers
-  ├─ Video Subsystem: VBIOS Option ROM execution (0xC000:0003) or native Mode 03h text
+  ├─ Video Subsystem: Video Option ROM execution (0xC000:0003) or native Mode 03h text
   ├─ Fast A20 Gate: Activated and verified via port 0x92
   ├─ Memory Detection: E820 / E801 memory map via CMOS 0x34/0x35 (with QEMU fw_cfg fallback)
   └─ PS/2 Controller: Configured for 8042 Scan Code Set 2 -> Set 1 translation
@@ -29,8 +29,8 @@ Automated Multi-Bus Storage Discovery & MBR Loading
   ├─ Validates MBR boot signature 0x55AA at offset 510
   │
   ▼
-OS Handover (Contract 3: Standard PC BIOS MBR Handover)
-  ├─ Sets DL = Boot drive ID (0x80 = primary disk, 0x81, 0x82 = USB)
+OS Handover (Standard PC MBR Handover)
+  ├─ Sets DL = selected firmware drive ID (0x80/0x81 for ATA, AHCI, or NVMe; 0x82 for USB when initialized)
   ├─ Sets DS = ES = SS = 0x0000, SP = 0x7C00, Flags: STI (interrupts enabled)
   └─ Jumps to loaded MBR at 0x0000:0x7C00
 ```
@@ -57,13 +57,13 @@ make clean
 `make run` allows isolated firmware execution, custom Boot ROM integration, and booting operating system storage media:
 
 ### 1. Standalone Execution (No arguments)
-Runs firmware in QEMU using standalone production ROM (`build/firmware.rom`):
+Runs firmware in QEMU using standalone production binary (`build/firmware.bin`):
 ```bash
 make run
 ```
 
 ### 2. Running with an External Boot ROM
-Embeds the firmware payload into a specified external Boot ROM (e.g. `IPO_Boot_Rom`) under Contract 2:
+Embeds the firmware payload into a specified external Boot ROM image:
 ```bash
 make run BOOTROM=path/to/bootrom.bin
 ```
@@ -94,32 +94,32 @@ make run AUDIO=none ...   # Disable audio connection
 
 | File | Size | Description |
 | :--- | :--- | :--- |
-| `build/.bin/firmware.bin` | < 32 KB | Assembled BIOS firmware payload (starts with `'IPOF'` signature). Standard input artifact consumed by `IPO_Boot_ROM`. |
-| `build/firmware.rom` | 256 KB+ | Complete BIOS ROM image for direct QEMU execution (`make run`) or physical flash chip programming. |
+| `build/.bin/firmware.bin` | <= 32 KiB | Assembled firmware payload (starts with `'IPO'` signature). Input artifact for a compatible external Boot ROM image builder. |
+| `build/firmware.bin` | 256 KiB standalone; otherwise the supplied Boot ROM image size | Complete firmware image for direct QEMU execution (`make run`) or physical flash chip programming. |
 
 ---
 
-## 📜 System Contracts
+## 📜 Boot Handoff Interfaces
 
-### Contract 2: Input Contract (Boot ROM → Firmware)
+### Firmware Input (Boot ROM → Firmware)
 Firmware receives control from the hardware reset bootloader with the machine in the following state:
 | Parameter | State | Description |
 | :--- | :--- | :--- |
 | **CPU Mode** | 16-bit Real Mode | Standard real mode execution |
-| **Entry Point (`CS:IP`)** | `0xF000:0x0004` | Entry in write-protected Shadow RAM (or `0x0800:0x0004` in chainload) |
-| **Magic Header** | `0xF000:0x0000` | 4 bytes: `'I', 'P', 'O', 'F'` (`0x464F5049`) |
+| **Entry Point (`CS:IP`)** | `0xF000:0x0004` | Entry in write-protected Shadow RAM |
+| **Magic Header** | `0xF000:0x0000` | 4 bytes: `'I', 'P', 'O'` (`0x004F5049`) |
 | **Data Segments** | `DS = ES = 0x0000` | Base conventional segment |
-| **Stack (`SS:SP`)** | `0x0000:0x7000` | Safe stack in DRAM below MBR buffer |
+| **Stack (`SS:SP`)** | `0x0000:0x7C00` | Initial stack pointer in DRAM; stack grows down below the MBR buffer |
 | **Interrupt Flag (`IF`)** | `0` (`cli`) | Interrupts disabled until firmware registers IVT handlers |
 | **Memory State** | Operational | DRAM initialized by Boot ROM (MRC); Shadow RAM write-protected |
 
-### Contract 3: Output Contract (Firmware → MBR / OS Bootloader)
-Firmware hands over execution to the operating system bootloader adhering strictly to standard PC-AT BIOS conventions:
+### Firmware Output (Firmware → MBR / OS Bootloader)
+Firmware hands over execution to the operating system bootloader using standard PC-AT conventions:
 | Parameter | State | Description |
 | :--- | :--- | :--- |
 | **CPU Mode** | 16-bit Real Mode | Standard real mode execution |
 | **Entry Point (`CS:IP`)** | `0x0000:0x7C00` | MBR entry point in conventional DRAM |
-| **Boot Drive (`DL`)** | `0x80` / `0x81` / `0x82` | BIOS Drive ID (`0x80` = primary disk/SATA/NVMe, `0x81` = secondary, `0x82` = USB) |
+| **Boot Drive (`DL`)** | `0x80` / `0x81` / `0x82` | Firmware drive number selected by Firmware; `0x80` and `0x81` map storage devices, while `0x82` is USB when initialized |
 | **Data & Stack** | `DS = ES = SS = 0x0000`, `SP = 0x7C00` | Clean segments, stack grows downward from `0x7C00` |
 | **Interrupt Flag (`IF`)** | `1` (`sti`) | Interrupts enabled, hardware timers and keyboard active |
 | **Boot Sector Buffer** | `0x0000:0x7C00` (512 bytes) | First sector (LBA 0) loaded from boot drive |
@@ -127,7 +127,7 @@ Firmware hands over execution to the operating system bootloader adhering strict
 
 ---
 
-## 🛠️ Supported BIOS Interrupt Services (IVT)
+## 🛠️ Supported Firmware Interrupt Services (IVT)
 
 | Interrupt | Function | Description |
 | :--- | :--- | :--- |
@@ -152,7 +152,7 @@ Firmware hands over execution to the operating system bootloader adhering strict
 
 ## 🔌 Hardware Subsystems & Features
 
-- **VBIOS Option ROM & Chaining:** Automatically detects PCI VGA adapters (`Class 0x03`), maps Expansion ROM BAR to `0xC0000`, validates `0xAA55` signature, executes entry point `0xC000:0003`, and chains the original handler to `INT 42h` while preserving teletype mirroring to COM1. If absent, firmware falls back to its built-in native Mode 03h driver.
+- **Video Option ROM & Chaining:** Automatically detects PCI VGA adapters (`Class 0x03`), maps Expansion ROM BAR to `0xC0000`, validates `0xAA55` signature, executes entry point `0xC000:0003`, and chains the original handler to `INT 42h` while preserving teletype mirroring to COM1. If absent, firmware falls back to its built-in native Mode 03h driver.
 - **Storage Subsystems:** Auto-probes multiple bus architectures without user configuration:
   - **IDE / PATA:** Legacy ATA PIO (`0x1F0` / `0x170`).
   - **SATA AHCI:** PCI AHCI HBA memory-mapped I/O with FIS & command headers.
@@ -170,7 +170,7 @@ Firmware hands over execution to the operating system bootloader adhering strict
 | `0x21` | PCI bus enumeration and device discovery completed | Progress |
 | `0x22` | Real-mode Interrupt Vector Table (IVT) installed | Progress |
 | `0x23` | ACPI 1.0 tables installed in EBDA (`0x9FC00`) | Progress |
-| `0x24` | Video initialized (VBIOS Option ROM or native Mode 03h) | Progress |
+| `0x24` | Video initialized (Option ROM or native Mode 03h) | Progress |
 | `0x25` | Fast A20 Gate activated and verified | Progress |
 | `0x26` | E820 / E801 memory map prepared in Scratch RAM | Progress |
 | `0x27` | 8042 PS/2 keyboard controller initialized | Progress |

@@ -1,13 +1,13 @@
-; vbios.asm — PCI Video Option ROM (VBIOS) Loader and Execution
+; video_option_rom.asm — PCI Video Option ROM Loader and Execution
 ; Discovers GPU Expansion ROM, maps and copies it to 0xC000:0000, and calls
-; the 16-bit real-mode VBIOS entry point (0xC000:0003) to wake up physical displays.
+; the 16-bit real-mode Video Option ROM entry point (0xC000:0003).
 
 BITS 16
 
 ; =============================================================================
-; vbios_init — Search for GPU Option ROM and initialize real graphics hardware
+; video_option_rom_init — Search for GPU Option ROM and initialize graphics hardware
 ; =============================================================================
-vbios_init:
+video_option_rom_init:
     pushad
     push    ds
     push    es
@@ -17,7 +17,7 @@ vbios_init:
 
     ; Check if VGA device was discovered during PCI enumeration
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
-    jne     .no_vbios
+    jne     .no_video_rom
 
     ; Build base PCI address for VGA controller
     movzx   eax, byte [es:SCRATCH_VGA_BUS]
@@ -56,19 +56,19 @@ vbios_init:
 
     ; Print detected signature
     push    ax
-    mov     si, msg_dbg_vbios_sig
-    call    bios_log
+    mov     si, msg_dbg_video_rom_sig
+    call    fw_log
     pop     ax
     push    ax
     mov     al, ah                          ; Print high byte first
-    call    bios_log_hex_byte
+    call    fw_log_hex_byte
     pop     ax
-    call    bios_log_hex_byte
+    call    fw_log_hex_byte
     mov     si, msg_newline
-    call    bios_log
+    call    fw_log
 
     cmp     word [es:0], 0xAA55
-    jne     .no_vbios
+    jne     .no_video_rom
 
     ; -------------------------------------------------------------------------
     ; 2b. Verify Option ROM Length & Checksum
@@ -76,7 +76,7 @@ vbios_init:
     ; -------------------------------------------------------------------------
     movzx   ecx, byte [es:2]
     test    ecx, ecx
-    jz      .no_vbios
+    jz      .no_video_rom
     shl     ecx, 9                          ; Length in bytes (ecx = count * 512)
 
     xor     dl, dl                          ; Checksum accumulator
@@ -88,57 +88,57 @@ vbios_init:
     jnz     .chksum_loop
 
     test    dl, dl
-    jnz     .no_vbios                       ; Checksum invalid -> do not execute!
+    jnz     .no_video_rom                   ; Checksum invalid -> do not execute!
 
     ; Valid Option ROM detected!
-    mov     si, msg_dbg_vbios_call
-    call    bios_log
+    mov     si, msg_dbg_video_rom_call
+    call    fw_log
 
     ; -------------------------------------------------------------------------
-    ; 3. Execute VBIOS Entry Point (Far Call to 0xC000:0x0003)
-    ;    Per IBM PC & PCI 2.2 spec, VBIOS entry point is at offset 0x0003
+    ; 3. Execute Video Option ROM Entry Point (Far Call to 0xC000:0x0003)
+    ;    Per PCI 2.2 spec, the Video Option ROM entry point is at offset 0x0003
     ; -------------------------------------------------------------------------
     push    cs
-    push    word .vbios_ret
+    push    word .video_rom_ret
     push    word 0xC000
     push    word 0x0003
     retf                                    ; Far jump to 0xC000:0x0003 (simulates far call)
 
-.vbios_ret:
-    ; Restore Firmware segments in case VBIOS altered them
+.video_rom_ret:
+    ; Restore Firmware segments in case the Option ROM altered them
     mov     ax, cs
     mov     ds, ax
     xor     ax, ax
     mov     es, ax
 
-    ; Save VBIOS INT 10h vector (installed by VBIOS at 0x0000:0x0040) to INT 42h (0x0000:0x0108)
+    ; Save the Option ROM INT 10h vector at 0x0000:0x0040 to INT 42h (0x0000:0x0108)
     mov     eax, [es:0x0040]
     mov     [es:0x0108], eax
 
-    ; Set SCRATCH_VBIOS_ACTIVE flag
-    mov     byte [es:SCRATCH_VBIOS_ACTIVE], 1
+    ; Set SCRATCH_VIDEO_ROM_ACTIVE flag
+    mov     byte [es:SCRATCH_VIDEO_ROM_ACTIVE], 1
 
     ; Reinstall Firmware int10h_handler at INT 10h (0x0000:0x0040)
     ; This enables teletype mirroring to COM1 while delegating rendering to INT 42h
     mov     word [es:0x0040], int10h_handler
     mov     word [es:0x0042], cs
 
-    mov     si, msg_dbg_vbios_done
-    call    bios_log
-    ; VBIOS initialized! Graphics card is active and text mode is ready.
+    mov     si, msg_dbg_video_rom_done
+    call    fw_log
+    ; Option ROM initialized; the graphics card and text mode are ready.
     pop     es
     pop     ds
     popad
     clc
     ret
 
-.no_vbios:
+.no_video_rom:
     pop     es
     pop     ds
     popad
     stc
     ret
 
-msg_dbg_vbios_sig   db "  [VBIOS] Signature at C000:0000 = 0x", 0
-msg_dbg_vbios_call  db "  [VBIOS] Invoking VBIOS at C000:0003...", 10, 0
-msg_dbg_vbios_done  db "  [VBIOS] Returned from VBIOS initialization.", 10, 0
+msg_dbg_video_rom_sig  db "  [Video ROM] Signature at C000:0000 = 0x", 0
+msg_dbg_video_rom_call db "  [Video ROM] Invoking entry point C000:0003...", 10, 0
+msg_dbg_video_rom_done db "  [Video ROM] Returned from initialization.", 10, 0

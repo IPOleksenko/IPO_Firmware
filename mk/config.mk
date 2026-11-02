@@ -20,12 +20,12 @@ TOOLS   := tools
 #                 OUTPUT ARTIFACTS
 # =============================================================================
 
-# Firmware payload binary (strictly < 32 KB, consumed by IPO_Boot_ROM)
-FIRMWARE_BIN := $(BIN)/firmware.bin
+# Firmware payload binary (up to 32 KiB, for embedding in a compatible Boot ROM image)
+FIRMWARE_PAYLOAD := $(BIN)/firmware.bin
 
-# Full ROM image for direct QEMU execution or physical chip flashing
-FIRMWARE_ROM := $(BUILD)/firmware.rom
-TARGET_ROM   := $(FIRMWARE_ROM)
+# Full binary image for direct QEMU execution or physical chip flashing
+FIRMWARE_BIN := $(BUILD)/firmware.bin
+TARGET_BIN   := $(FIRMWARE_BIN)
 
 # =============================================================================
 #                 SOURCES
@@ -33,7 +33,7 @@ TARGET_ROM   := $(FIRMWARE_ROM)
 
 SRCS    := $(SRC)/entry.asm \
            $(SRC)/pci_scan.asm \
-           $(SRC)/vbios.asm \
+           $(SRC)/video_option_rom.asm \
            $(SRC)/ahci.asm \
            $(SRC)/nvme.asm \
            $(SRC)/usb_ehci.asm \
@@ -47,7 +47,7 @@ SRCS    := $(SRC)/entry.asm \
            $(SRC)/chainload.asm \
            $(SRC)/font8x16.bin \
            $(SRC)/vga_dac.bin \
-           $(INC)/contract.inc
+           $(INC)/boot_constants.inc
 
 # =============================================================================
 #                 FLAGS
@@ -73,8 +73,8 @@ OS_IMAGE ?= $(OS)
 CPU      ?= pentium3
 MEM      ?= 512
 
-# Base QEMU flags for running Firmware BIOS
-QEMU_FLAGS := -M pc -cpu $(CPU) -m $(MEM) -bios $(TARGET_ROM) -serial stdio
+# Base QEMU flags for running the firmware image
+QEMU_FLAGS := -M pc -cpu $(CPU) -m $(MEM) -bios $(TARGET_BIN) -serial stdio
 
 # Audio configuration for PC Speaker
 AUDIO ?= pa

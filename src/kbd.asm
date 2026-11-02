@@ -28,7 +28,7 @@ ps2_controller_init:
     in      al, 0x60                        ; AL = config byte
 
     ; 3. Enable Translation (Bit 6 = 1) and Keyboard Clock (Bit 4 = 0)
-    ; Standard BIOS setting: bit 6 (XLAT)=1, bit 0 (KBD IRQ)=1, bit 4 (KBD CLK)=0
+    ; Controller setting: bit 6 (XLAT)=1, bit 0 (KBD IRQ)=1, bit 4 (KBD CLK)=0
     or      al, 0x41                        ; Bit 6 = 1 (XLAT), Bit 0 = 1 (KBD INT)
     and     al, ~0x10                       ; Bit 4 = 0 (Enable KBD Clock)
     mov     bl, al
@@ -87,4 +87,3 @@ ps2_wait_read:
 .r_done:
     pop     cx
     ret
-

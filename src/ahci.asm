@@ -1,4 +1,4 @@
-; ahci.asm — SATA AHCI Controller Driver for x86 BIOS
+; ahci.asm — SATA AHCI Controller Driver for x86 real mode
 ; Implements AHCI HBA detection, port initialization, and sector reading via DMA.
 ; Uses Flat Real Mode (Unreal Mode with FS descriptor limit = 4GB) to access 32-bit MMIO.
 

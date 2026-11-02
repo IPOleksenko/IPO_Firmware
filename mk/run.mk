@@ -2,10 +2,10 @@
 #                 EMULATION / RUN TARGET
 # =============================================================================
 
-run: $(TARGET_ROM)
+run: $(TARGET_BIN)
 ifneq ($(ROM_BIN),)
 	@echo "================================================================="
-	@echo "[IPO_Firmware] Launching QEMU with BIOS Firmware"
+	@echo "[IPO_Firmware] Launching QEMU with firmware image"
 	@echo "[IPO_Firmware] Embedded Boot ROM: $(ROM_BIN)"
 ifneq ($(OS_IMAGE),)
 	@if [ ! -f "$(OS_IMAGE)" ]; then \
@@ -21,12 +21,12 @@ else ifneq ($(OS_IMAGE),)
 		exit 1; \
 	fi
 	@echo "================================================================="
-	@echo "[IPO_Firmware] Launching QEMU with BIOS Firmware"
+	@echo "[IPO_Firmware] Launching QEMU with firmware image"
 	@echo "[IPO_Firmware] Booting OS from storage media: $(OS_IMAGE)"
 	@echo "================================================================="
 else
 	@echo "================================================================="
-	@echo "[IPO_Firmware] Launching QEMU with BIOS Firmware (standalone)"
+	@echo "[IPO_Firmware] Launching QEMU with firmware image (standalone)"
 	@echo "[IPO_Firmware] Tip: To embed Boot ROM:  make run BOOTROM=path/to/bootrom.bin"
 	@echo "[IPO_Firmware] Tip: To boot an OS image: make run OS=path/to/os.img"
 	@echo "================================================================="

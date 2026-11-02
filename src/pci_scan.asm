@@ -101,48 +101,34 @@ pci_scan_devices:
     test    ax, ax
     jz      .fn_absent
 
-    ; Check for Power Management / ACPI controllers to enable ACPI I/O (PMBA = 0x0600)
-    cmp     eax, 0x71138086                 ; Intel PIIX4 PM (i440FX)
-    jne     .check_q35_pm
-
-    ; 1. PIIX4 PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+    ; Read Class Code, Subclass, ProgIF (reg 0x08)
+    ; Reg 0x08: [Class(31:24) | Subclass(23:16) | ProgIF(15:8) | RevID(7:0)]
     mov     eax, esi
-    or      eax, 0x40
-    mov     ecx, 0x00000601
-    call    pci_write_dword
-
-    ; 2. PIIX4 PMREGMISC (reg 0x80): set bit 0 (PMIOSE - PM I/O Space Enable)
-    mov     eax, esi
-    or      eax, 0x80
+    or      eax, 0x08
     call    pci_read_dword
-    or      al, 0x01
-    mov     ecx, eax
-    mov     eax, esi
-    or      eax, 0x80
-    call    pci_write_dword
+    mov     edi, eax                        ; EDI = Class register value
 
-    ; 3. Enable I/O Space in Command register (offset 0x04)
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_read_dword
-    or      al, 0x01
-    mov     ecx, eax
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_write_dword
-    jmp     .pm_done
-
-.check_q35_pm:
-    cmp     eax, 0x29188086                 ; Intel ICH9 LPC / ACPI (Q35)
+    ; Check for Bridge devices (Class 0x06: ISA 0x01, Other 0x80) to enable Power Management / ACPI I/O (base 0x0600)
+    shr     eax, 24                         ; AL = Class
+    cmp     al, 0x06                        ; Class 0x06 = Bridge Device
     jne     .pm_done
 
-    ; 1. ICH9 PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+    mov     eax, edi
+    shr     eax, 16
+    and     al, 0xFF                        ; AL = Subclass
+    cmp     al, 0x01
+    je      .setup_bridge_pm
+    cmp     al, 0x80
+    jne     .pm_done
+
+.setup_bridge_pm:
+    ; 1. PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
     mov     eax, esi
     or      eax, 0x40
     mov     ecx, 0x00000601
     call    pci_write_dword
 
-    ; 2. ICH9 ACPI_CTRL (reg 0x44): set bit 7 (ACPI_EN)
+    ; 2. Enable ACPI / PM I/O space on Bridge control registers (reg 0x44 bit 7, reg 0x80 bit 0)
     mov     eax, esi
     or      eax, 0x44
     call    pci_read_dword
@@ -150,6 +136,15 @@ pci_scan_devices:
     mov     ecx, eax
     mov     eax, esi
     or      eax, 0x44
+    call    pci_write_dword
+
+    mov     eax, esi
+    or      eax, 0x80
+    call    pci_read_dword
+    or      al, 0x01
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x80
     call    pci_write_dword
 
     ; 3. Enable I/O Space in Command register (offset 0x04)
@@ -163,16 +158,10 @@ pci_scan_devices:
     call    pci_write_dword
 
 .pm_done:
-    ; Read Class Code, Subclass, ProgIF (reg 0x08)
-    ; Reg 0x08: [Class(31:24) | Subclass(23:16) | ProgIF(15:8) | RevID(7:0)]
-    mov     eax, esi
-    or      eax, 0x08
-    call    pci_read_dword
-    mov     edi, eax                        ; EDI = Class register value
-
     ; -------------------------------------------------------------------------
     ; 1. Check for VGA Display Controller: Class 0x03
     ; -------------------------------------------------------------------------
+    mov     eax, edi
     shr     eax, 24                         ; AL = Class
     cmp     al, PCI_CLASS_DISPLAY
     jne     .check_storage

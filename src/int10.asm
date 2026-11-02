@@ -1,4 +1,4 @@
-; int10.asm — BIOS Video Services (INT 10h) implementation
+; int10.asm — Video Services (INT 10h) implementation
 ; Supports 80x25 16-color VGA text mode (Mode 03h)
 
 BITS 16
@@ -9,14 +9,14 @@ int10h_handler:
     push    ax
     xor     ax, ax
     mov     ds, ax
-    cmp     byte [ds:SCRATCH_VBIOS_ACTIVE], 1
+    cmp     byte [ds:SCRATCH_VIDEO_ROM_ACTIVE], 1
     pop     ax
     pop     ds
     jne     .native_int10
 
-    ; VBIOS is active: mirror AH=0x0E (Teletype) to serial COM1
+    ; Video Option ROM is active: mirror AH=0x0E (Teletype) to serial COM1
     cmp     ah, 0x0E
-    jne     .call_vbios
+    jne     .call_video_rom
 
     cmp     al, 10
     jne     .v_tx
@@ -31,7 +31,7 @@ int10h_handler:
     call    serial_tx_char
     pop     ax
 
-.call_vbios:
+.call_video_rom:
     int     0x42
     iret
 
@@ -376,9 +376,9 @@ vga_scroll_up:
     ret
 
 ; =============================================================================
-; Render BIOS Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
+; Render Firmware Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
 ; =============================================================================
-bios_render_header:
+fw_render_header:
     push    es
     xor     ax, ax
     mov     es, ax
@@ -399,7 +399,7 @@ bios_render_header:
 
     ; 1. Row 0 Left (col 0): "IPO_Firmware" (attribute 0x0A: Light Green on Black)
     xor     di, di
-    mov     si, bios_str_title
+    mov     si, fw_str_title
     mov     ah, 0x0A
 .loop_title:
     lodsb
@@ -412,7 +412,7 @@ bios_render_header:
     ; 2. Row 0 Right (col 66): "by IPOleksenko" (attribute 0x0A)
     ; Col 66 * 2 = 132 byte offset
     mov     di, 132
-    mov     si, bios_str_author
+    mov     si, fw_str_author
     mov     ah, 0x0A
 .loop_author:
     lodsb
@@ -438,8 +438,8 @@ bios_render_header:
 .header_skip:
     ret
 
-bios_str_title  db "IPO_Firmware", 0
-bios_str_author db "by IPOleksenko", 0
+fw_str_title  db "IPO_Firmware", 0
+fw_str_author db "by IPOleksenko", 0
 
 ; =============================================================================
 ; VGA Hardware Initialization (Mode 03h: 80x25 text console)

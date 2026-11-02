@@ -1,4 +1,4 @@
-; int13.asm — BIOS Disk Services (INT 13h) implementation
+; int13.asm — Disk Services (INT 13h) implementation
 ; Features: AH=00h (Reset), AH=41h (Extensions Check), AH=42h (DAP Extended Read)
 ; Supports ATA/IDE PIO Mode for Drive 0x80 (Master) and 0x81 (Slave)
 

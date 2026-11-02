@@ -1,11 +1,11 @@
-; int15.asm — BIOS System Services (INT 15h)
+; int15.asm — System Services (INT 15h)
 ; Implements AX=E820h (Memory Map), AX=E801h (Memory Size), and AX=2401h (A20)
 ; Strictly stores all state and dynamic tables in conventional Scratch RAM (0x0000)
 ; ZERO writes to CS / Shadow RAM!
 
 BITS 16
 
-%include "contract.inc"
+%include "boot_constants.inc"
 
 int15h_handler:
     sti
@@ -238,7 +238,7 @@ ensure_memory_detected:
     mov     dword [es:di + 12], 0x00000000   ; Length high
     mov     dword [es:di + 16], 1            ; Type 1 = Usable
 
-    ; Entry 1: Reserved EBDA + Video RAM + BIOS ROM (0x9FC00 - 0x100000, 385 KB)
+    ; Entry 1: Reserved EBDA + Video RAM + firmware ROM (0x9FC00 - 0x100000, 385 KB)
     mov     dword [es:di + 20], 0x0009FC00   ; Base low
     mov     dword [es:di + 24], 0x00000000   ; Base high
     mov     dword [es:di + 28], 0x00060400   ; Length low (385 KB)
