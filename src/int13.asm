@@ -22,20 +22,16 @@ int13h_handler:
     stc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AH = 0x00 — Reset Disk System
-; -----------------------------------------------------------------------------
 .fn_reset:
     xor     ah, ah
     clc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AH = 0x41 — Installation Check (Extensions check)
 ; Input: AH = 0x41, BX = 0x55AA, DL = Drive (0x80..0xFF)
 ; Output:
 ;   CF = 0 (Supported), BX = 0xAA55, AH = 0x21 (v1.x), CX = 0x0001 (DAP supported)
-; -----------------------------------------------------------------------------
 .fn_extensions_check:
     cmp     bx, 0x55AA
     jne     .ext_fail
@@ -51,13 +47,13 @@ int13h_handler:
     stc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AH = 0x08 — Get Drive Parameters
-; -----------------------------------------------------------------------------
 .fn_get_drive_params:
+    push    ds
     xor     ax, ax
-    mov     es, ax
-    mov     dl, [es:0x0475]                 ; Number of drives attached (from BDA)
+    mov     ds, ax
+    mov     dl, [ds:0x0475]                 ; Number of drives attached (from BDA)
+    pop     ds
     test    dl, dl
     jnz     .drives_ok
     mov     dl, 1
@@ -69,7 +65,6 @@ int13h_handler:
     clc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AH = 0x02 — Read Sectors From Drive (Legacy CHS)
 ; Input:
 ;   AL = number of sectors to read (1..128)
@@ -82,7 +77,6 @@ int13h_handler:
 ;   AH = status (0 = success)
 ;   AL = number of sectors read
 ;   CF = 0 (success), CF = 1 (error)
-; -----------------------------------------------------------------------------
 .fn_chs_read:
     push    ds
     push    es
@@ -146,6 +140,12 @@ int13h_handler:
     push    cx
     call    ata_read_one_sector
     jc      .chs_fail
+    test    di, di
+    jnz     .chs_next_lba
+    mov     ax, es
+    add     ax, 0x1000
+    mov     es, ax
+.chs_next_lba:
     inc     ebx
     pop     cx
     loop    .chs_ata_loop
@@ -177,6 +177,7 @@ int13h_handler:
     pop     bp
     pop     es
     pop     ds
+    xor     al, al
     mov     ah, 0x04
     stc
     jmp     .exit
@@ -184,6 +185,7 @@ int13h_handler:
 .chs_ok:
     pop     bx
     pop     cx
+    mov     al, cl                      ; Return AL = number of sectors read
     pop     dx
     pop     di
     pop     si
@@ -194,11 +196,9 @@ int13h_handler:
     clc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AH = 0x42 — Extended Read Sectors from Drive (via DAP)
 ; Input:
 ;   AH = 0x42, DL = Drive (0x80..0x83), DS:SI = Pointer to Disk Address Packet
-; -----------------------------------------------------------------------------
 .fn_extended_read:
     push    ds
     push    es
@@ -366,14 +366,12 @@ int13h_handler:
     pop     bp
     iret
 
-; =============================================================================
 ; ATA PIO Single Sector Reader
 ; Inputs:
 ;   EBX = LBA28
 ;   DL  = Drive (0x80=Master, 0x81=Slave)
 ;   ES:DI = Destination buffer (512 bytes)
 ; Output: CF = 0 on success, CF = 1 on error
-; =============================================================================
 ata_read_one_sector:
     push    ebx                             ; Save original 32-bit LBA
     push    dx
@@ -382,12 +380,12 @@ ata_read_one_sector:
     push    bp
     mov     bp, sp
 
-    ; 1. Wait until drive is not busy (BSY=0)
+    ; Wait until drive is not busy (BSY=0)
     mov     dx, ATA_PRI_STATUS
     call    ata_wait_not_busy
     jc      .ata_err_1
 
-    ; 2. Select Drive and top 4 bits of LBA
+    ; Select Drive and top 4 bits of LBA
     ; Format: 0xE0 | ((drive & 1) << 4) | (LBA[27:24] & 0x0F)
     mov     eax, ebx
     shr     eax, 24
@@ -401,24 +399,24 @@ ata_read_one_sector:
     mov     dx, ATA_PRI_DRIVE_HEAD
     out     dx, al
 
-    ; 3. Small delay (400ns) by reading alternate status
+    ; Small delay (400ns) by reading alternate status
     mov     dx, ATA_PRI_CTRL
     in      al, dx
     in      al, dx
     in      al, dx
     in      al, dx
 
-    ; 4. Wait for BSY to clear and DRDY to set
+    ; Wait for BSY to clear and DRDY to set
     mov     dx, ATA_PRI_STATUS
     call    ata_wait_ready
     jc      .ata_err_4
 
-    ; 5. Set Sector Count = 1
+    ; Set Sector Count = 1
     mov     dx, ATA_PRI_SEC_CNT
     mov     al, 1
     out     dx, al
 
-    ; 6. Set LBA low, mid, high from original EBX
+    ; Set LBA low, mid, high from original EBX
     mov     dx, ATA_PRI_LBA_LO
     mov     al, bl
     out     dx, al
@@ -432,16 +430,16 @@ ata_read_one_sector:
     mov     al, bl
     out     dx, al
 
-    ; 7. Issue Command: 0x20 (READ SECTORS)
+    ; Issue Command: 0x20 (READ SECTORS)
     mov     dx, ATA_PRI_STATUS
     mov     al, 0x20
     out     dx, al
 
-    ; 8. Wait for Data Request (DRQ=1)
+    ; Wait for Data Request (DRQ=1)
     call    ata_wait_drq
     jc      .ata_err_8
 
-    ; 9. Transfer 256 words (512 bytes) from Data port (0x1F0) to ES:DI
+    ; Transfer 256 words (512 bytes) from Data port (0x1F0) to ES:DI
     mov     dx, ATA_PRI_DATA
     mov     cx, 256
     cld
@@ -509,8 +507,20 @@ ata_wait_ready:
     dec     cx
     jnz     .fast_loop
 
-    ; Stage 2: Drive not ready yet -> physical mechanical HDD spin-up.
-    ; Emit diagnostic POST code 0x29 to port 0x80
+    ; Only wait for spin-up if a real attached drive is still asserting BSY (not 0x00 or 0xFF).
+    cmp     al, 0xFF
+    je      .timeout_early
+    test    al, 0x80
+    jnz     .spinup_wait
+.timeout_early:
+    pop     es
+    pop     ecx
+    pop     ebx
+    stc
+    ret
+
+.spinup_wait:
+    ; Drive still busy -> wait for mechanical HDD spin-up (POST code 0x29).
     mov     al, POST_DISK_SPINUP_WAIT
     out     POST_PORT, al
 

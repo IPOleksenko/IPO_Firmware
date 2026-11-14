@@ -4,9 +4,7 @@
 
 BITS 16
 
-; =============================================================================
 ; PCI Configuration Space Helper Routines (Local to Firmware)
-; =============================================================================
 
 pci_read_dword:
     push    edx
@@ -33,10 +31,8 @@ pci_write_dword:
     pop     edx
     ret
 
-; =============================================================================
 ; pci_scan_devices — Scan PCI buses 0..3 for boot-critical hardware
 ; Output: Updates Scratch RAM registry at 0x0000:0x0540..0x056F
-; =============================================================================
 pci_scan_devices:
     pushad
     push    es
@@ -48,6 +44,9 @@ pci_scan_devices:
     mov     byte [es:SCRATCH_AHCI_FOUND], 0
     mov     byte [es:SCRATCH_USB_FOUND], 0
     mov     byte [es:SCRATCH_VGA_FOUND], 0
+    mov     byte [es:SCRATCH_NVME_FOUND], 0
+    mov     byte [es:SCRATCH_VIDEO_ROM_ACTIVE], 0
+    mov     dword [es:SCRATCH_DRV_TYPE_80], 0
 
     ; Scan buses 0..3 (sufficient for root and secondary buses in standard PCs)
     xor     bx, bx                          ; BH = Bus (0..3), BL = Device (0..31)
@@ -74,11 +73,9 @@ pci_scan_devices:
     popad
     ret
 
-; -----------------------------------------------------------------------------
 ; Helper: .check_function
 ; Input: BH = Bus, BL = Device, CL = Function, ES = 0x0000
 ; Output: CF = 0 if device exists, CF = 1 if nonexistent (VID=0xFFFF)
-; -----------------------------------------------------------------------------
 .check_function:
     pushad
 
@@ -122,13 +119,13 @@ pci_scan_devices:
     jne     .pm_done
 
 .setup_bridge_pm:
-    ; 1. PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+    ; PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
     mov     eax, esi
     or      eax, 0x40
     mov     ecx, 0x00000601
     call    pci_write_dword
 
-    ; 2. Enable ACPI / PM I/O space on Bridge control registers (reg 0x44 bit 7, reg 0x80 bit 0)
+    ; Enable ACPI / PM I/O space on Bridge control registers (reg 0x44 bit 7, reg 0x80 bit 0)
     mov     eax, esi
     or      eax, 0x44
     call    pci_read_dword
@@ -147,7 +144,7 @@ pci_scan_devices:
     or      eax, 0x80
     call    pci_write_dword
 
-    ; 3. Enable I/O Space in Command register (offset 0x04)
+    ; Enable I/O Space in Command register (offset 0x04)
     mov     eax, esi
     or      eax, 0x04
     call    pci_read_dword
@@ -158,9 +155,7 @@ pci_scan_devices:
     call    pci_write_dword
 
 .pm_done:
-    ; -------------------------------------------------------------------------
-    ; 1. Check for VGA Display Controller: Class 0x03
-    ; -------------------------------------------------------------------------
+    ; Check for VGA Display Controller: Class 0x03
     mov     eax, edi
     shr     eax, 24                         ; AL = Class
     cmp     al, PCI_CLASS_DISPLAY
@@ -177,6 +172,21 @@ pci_scan_devices:
     or      al, cl
     mov     byte [es:SCRATCH_VGA_DEVFN], al
 
+    ; Read BAR0 (reg 0x10): assign 0xE0000000 LFB base if MMIO BAR is unassigned
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_read_dword
+    test    al, 0x01
+    jnz     .vga_rom_bar
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .vga_rom_bar
+    mov     ecx, 0xE0000000
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_write_dword
+
+.vga_rom_bar:
     ; Read Expansion ROM Base Address Register (reg 0x30)
     mov     eax, esi
     or      eax, 0x30
@@ -184,9 +194,7 @@ pci_scan_devices:
     mov     dword [es:SCRATCH_VGA_ROMBAR], eax
 
 .check_storage:
-    ; -------------------------------------------------------------------------
-    ; 2. Check for Mass Storage (Class 0x01)
-    ; -------------------------------------------------------------------------
+    ; Check for Mass Storage (Class 0x01)
     mov     eax, edi
     shr     eax, 16
     and     ax, 0xFFFF                      ; AH = Class, AL = Subclass
@@ -287,14 +295,12 @@ pci_scan_devices:
     call    pci_write_dword
 
 .check_usb:
-    ; -------------------------------------------------------------------------
-    ; 3. Check for Serial Bus (Class 0x0C) -> USB (SubClass 0x03)
-    ; -------------------------------------------------------------------------
+    ; Check for Serial Bus (Class 0x0C) -> USB (SubClass 0x03)
     mov     eax, edi
     shr     eax, 16
     and     ax, 0xFFFF                      ; AH = Class, AL = Subclass
     cmp     ah, PCI_CLASS_SERIAL
-    jne     .fn_present
+    jne     .check_network
 
     cmp     al, PCI_SUBCLASS_USB
     jne     .fn_present
@@ -375,6 +381,55 @@ pci_scan_devices:
     or      eax, 0x04
     call    pci_read_dword
     or      al, 0x06
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_write_dword
+    jmp     .fn_present
+
+.check_network:
+    cmp     ah, 0x02                        ; Class 0x02 = Network Controller
+    jne     .fn_present
+
+    ; Assign BAR0 if left unconfigured by reset (I/O -> 0xC000, MMIO -> 0xFEBA0000)
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_read_dword
+    test    al, 0x01
+    jz      .net_check_mmio
+    and     eax, 0xFFFFFFFC
+    cmp     eax, 0x0100
+    jae     .net_enable_cmd
+    mov     ecx, 0x0000C001
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_write_dword
+    jmp     .net_enable_cmd
+
+.net_check_mmio:
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .net_enable_cmd
+    mov     ecx, 0xFFFFFFFF
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_write_dword
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_read_dword
+    and     eax, 0xFFFFFFF0
+    test    eax, eax
+    jz      .net_enable_cmd
+    mov     ecx, 0xFEBA0000
+    mov     eax, esi
+    or      eax, 0x10
+    call    pci_write_dword
+
+.net_enable_cmd:
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_read_dword
+    or      al, 0x07
     mov     ecx, eax
     mov     eax, esi
     or      eax, 0x04

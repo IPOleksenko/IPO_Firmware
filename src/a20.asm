@@ -7,13 +7,14 @@ a20_enable:
     push    ds
     push    es
     push    ax
+    push    cx
 
-    ; 1. Check if A20 is already enabled
+    ; Check if A20 is already enabled
     call    a20_test
     test    ax, ax
     jnz     .a20_done
 
-    ; 2. Attempt Fast A20 Gate via Port 0x92
+    ; Attempt Fast A20 Gate via Port 0x92
     in      al, 0x92
     test    al, 0x02
     jnz     .check_after_set
@@ -30,16 +31,27 @@ a20_enable:
     jnz     .a20_done
     loop    .wait_loop
 
+    ; Fallback: Enable A20 via 8042 Keyboard Controller (Command 0xD1 -> 0xDF)
+    call    ps2_wait_write
+    mov     al, 0xD1                        ; Write Output Port command
+    out     0x64, al
+    call    ps2_wait_write
+    mov     al, 0xDF                        ; Enable A20 line (bit 1 = 1)
+    out     0x60, al
+    call    ps2_wait_write
+    mov     al, 0xFF                        ; Pulse/Null command to latch output port
+    out     0x64, al
+    call    ps2_wait_write
+
 .a20_done:
+    pop     cx
     pop     ax
     pop     es
     pop     ds
     ret
 
-; -----------------------------------------------------------------------------
 ; a20_test — Checks if A20 line is enabled by testing memory wrap-around.
 ; Returns: AX = 1 if enabled, AX = 0 if disabled.
-; -----------------------------------------------------------------------------
 a20_test:
     push    cx
     push    si

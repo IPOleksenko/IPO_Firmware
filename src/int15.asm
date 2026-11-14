@@ -21,22 +21,18 @@ int15h_handler:
     stc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AX = 0x2401 — Enable A20 Gate
-; -----------------------------------------------------------------------------
 .fn_enable_a20:
     call    a20_enable
     xor     ah, ah
     clc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; AX = 0xE801 — Get Memory Size for >64M Configurations
 ; Output:
 ;   AX = CX = Memory between 1MB and 16MB in KB (max 15MB = 15360 = 0x3C00)
 ;   BX = DX = Memory between 16MB and 4GB in 64KB blocks
 ;   CF = 0
-; -----------------------------------------------------------------------------
 .fn_e801:
     push    ds
     xor     bx, bx
@@ -53,7 +49,6 @@ int15h_handler:
     clc
     jmp     .exit
 
-; -----------------------------------------------------------------------------
 ; EAX = 0xE820 — Query System Address Map
 ; Input:
 ;   EAX = 0xE820, EDX = 'SMAP' (0x534D4150)
@@ -63,7 +58,6 @@ int15h_handler:
 ; Output:
 ;   EAX = 'SMAP', ECX = 20, EBX = next handle (0 if last)
 ;   CF = 0 (success)
-; -----------------------------------------------------------------------------
 .fn_e820:
     cmp     edx, 0x534D4150                 ; Verify 'SMAP' signature
     jne     .e820_fail
@@ -140,10 +134,8 @@ int15h_handler:
     pop     bp
     iret
 
-; =============================================================================
 ; Memory Detection & Dynamic E820 Table Generator
 ; Strictly writes only to Scratch RAM (0x0000:0x0500+)
-; =============================================================================
 ensure_memory_detected:
     push    eax
     push    edx
@@ -164,7 +156,7 @@ ensure_memory_detected:
     test    eax, eax
     jnz     .have_ram_size
 
-    ; 1. Try CMOS registers 0x34/0x35 (standard on physical ATX PCs)
+    ; Try CMOS registers 0x34/0x35 (standard on physical ATX PCs)
     mov     al, 0x34
     out     CMOS_INDEX_PORT, al
     in      al, CMOS_DATA_PORT
@@ -184,7 +176,7 @@ ensure_memory_detected:
     jmp     .have_ram_size
 
 .try_cmos_base:
-    ; 2. Fallback: CMOS registers 0x30/0x31 (1-16MB memory in KB)
+    ; Fallback: CMOS registers 0x30/0x31 (1-16MB memory in KB)
     mov     al, 0x30
     out     CMOS_INDEX_PORT, al
     in      al, CMOS_DATA_PORT
@@ -226,9 +218,7 @@ ensure_memory_detected:
     mov     word [es:SCRATCH_RAM_ABOVE16], 0
 
 .build_e820:
-    ; =========================================================================
     ; Construct Dynamic E820 Table in Scratch RAM at SCRATCH_E820_TABLE (0x0598)
-    ; =========================================================================
     mov     di, SCRATCH_E820_TABLE
 
     ; Entry 0: Usable Conventional RAM (0x00000 - 0x9FC00, 639 KB)

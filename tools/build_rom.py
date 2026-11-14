@@ -6,8 +6,8 @@ Target: Real Hardware (EPROM / Flash ROM 27C020, SST39SF020, W29C020) & Emulator
 Modes:
 1. Standalone Production ROM (no --bootrom):
    - Layout of 64KB bank (mapped to F000:0000 - F000:FFFF):
-       * Offset 0x0000: Firmware Payload (Magic 'IPO' at 0x0000, entry at 0x0004)
-       * Offset 0xFFF0: Power-on CPU Reset Vector (jmp far F000:0004 -> EA 04 00 00 F0)
+       * Offset 0x0000: Firmware Payload (Magic 'IPO_Firmware' at 0x0000, entry at 0x000C)
+       * Offset 0xFFF0: Power-on CPU Reset Vector (jmp far F000:000C -> EA 0C 00 00 F0)
        * Offset 0xFFF5: Release Date string "MM/DD/YY" (8 bytes ASCII: "01/01/26")
        * Offset 0xFFFD: Sub-model byte (0x00)
        * Offset 0xFFFE: System Model byte (0xFC = IBM PC-AT / 386+ Architecture)
@@ -41,6 +41,10 @@ def main():
     with open(args.raw_fw, "rb") as f:
         fw_code = f.read()
 
+    if fw_code[:12] != b"IPO_Firmware":
+        print("ERROR: Firmware binary missing 'IPO_Firmware' magic header at offset 0x0000!", file=sys.stderr)
+        sys.exit(1)
+
     max_payload = BANK_SIZE - 16
     if len(fw_code) > max_payload:
         print(f"ERROR: Firmware code size ({len(fw_code)} bytes) exceeds max 64K bank payload ({max_payload} bytes)!", file=sys.stderr)
@@ -73,14 +77,14 @@ def main():
         print(f"[build_rom] Created Boot ROM-embedded ROM: {args.output_rom} ({len(rom_data)} bytes)")
         print(f"            - Embedded Boot ROM: {args.bootrom} ({len(bootrom_data)} bytes / {len(bootrom_data)//1024} KB)")
         print(f"            - Firmware offset:   0x{fw_offset:08X} ({fw_offset} bytes)")
-        print(f"            - Firmware size:     {len(fw_code)} bytes (Magic 'IPO' at 0xF000:0x0000)")
+        print(f"            - Firmware size:     {len(fw_code)} bytes (Magic 'IPO_Firmware' at 0xF000:0x0000)")
     else:
         # Standalone Production ROM mode (direct hardware reset vector)
         bank = bytearray(b"\xFF" * BANK_SIZE)
         bank[0:len(fw_code)] = fw_code
 
         # Offset 0xFFF0 (physical 0xFFFF0): Power-On CPU Reset Vector
-        bank[0xFFF0:0xFFF5] = b"\xEA\x04\x00\x00\xF0"
+        bank[0xFFF0:0xFFF5] = b"\xEA\x0C\x00\x00\xF0"
 
         # Offset 0xFFF5: Standard firmware date (MM/DD/YY)
         bank[0xFFF5:0xFFFD] = b"01/01/26"
@@ -104,7 +108,7 @@ def main():
 
         print(f"[build_rom] Created production ROM: {args.output_rom} ({len(rom_data)} bytes)")
         print(f"            - Payload size: {len(fw_code)} bytes")
-        print(f"            - Reset Vector: 0xF000:0x0004 (at offset 0xFFF0 in 64KB bank)")
+        print(f"            - Reset Vector: 0xF000:0x000C (at offset 0xFFF0 in 64KB bank)")
         print(f"            - Model Byte:   0xFC (IBM PC-AT)")
         print(f"            - Checksum:     0x{checksum_byte:02X} (verified modulo 256 == 0)")
         print(f"            - Banks:        {ROM_SIZE // BANK_SIZE}x 64KB mirrored (compatible with 64K/128K/256K hardware)")

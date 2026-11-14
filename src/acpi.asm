@@ -19,14 +19,12 @@ acpi_init_tables:
     mov     ax, EBDA_SEG
     mov     es, ax
 
-    ; -------------------------------------------------------------------------
-    ; 1. Build MADT (Multiple APIC Description Table) at EBDA + 0x0080
-    ; -------------------------------------------------------------------------
+    ; Build MADT (Multiple APIC Description Table) at EBDA + 0x0080
     mov     di, EBDA_MADT_OFF
 
-    ; Header (36 bytes)
+    ; Header (36 bytes) + MADT fixed fields (8 bytes) + Local APIC entry (8 bytes)
     mov     dword [es:di + 0x00], 'APIC'         ; Signature: "APIC"
-    mov     dword [es:di + 0x04], 44             ; Total Length = 44 bytes
+    mov     dword [es:di + 0x04], 52             ; Total Length = 52 bytes
     mov     byte  [es:di + 0x08], 1              ; Revision = 1
     mov     byte  [es:di + 0x09], 0              ; Checksum (computed below)
     mov     dword [es:di + 0x0A], 'IPO '         ; OEMID
@@ -48,15 +46,13 @@ acpi_init_tables:
     mov     byte  [es:di + 0x2F], 0              ; APIC ID = 0 (BSP)
     mov     dword [es:di + 0x30], 1              ; Flags: 1 = Enabled
 
-    ; Compute MADT Checksum (sum of all 44 bytes mod 256 == 0)
+    ; Compute MADT Checksum (sum of all 52 bytes mod 256 == 0)
     mov     si, di
-    mov     cx, 44
+    mov     cx, 52
     call    .compute_table_checksum
     mov     [es:di + 0x09], al
 
-    ; -------------------------------------------------------------------------
-    ; 2. Build RSDT (Root System Description Table) at EBDA + 0x0040
-    ; -------------------------------------------------------------------------
+    ; Build RSDT (Root System Description Table) at EBDA + 0x0040
     mov     di, EBDA_RSDT_OFF
 
     ; Header (36 bytes)
@@ -81,9 +77,7 @@ acpi_init_tables:
     call    .compute_table_checksum
     mov     [es:di + 0x09], al
 
-    ; -------------------------------------------------------------------------
-    ; 3. Build RSDP (Root System Description Pointer) at EBDA + 0x0000
-    ; -------------------------------------------------------------------------
+    ; Build RSDP (Root System Description Pointer) at EBDA + 0x0000
     mov     di, EBDA_RSDP_OFF
 
     ; "RSD PTR " (8 bytes)

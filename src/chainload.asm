@@ -12,11 +12,11 @@ chainload_boot:
 
     ; Print probe message
     mov     si, msg_probing
-    call    print_string
+    call    fw_log
     mov     al, dl
-    call    print_hex_byte
+    call    fw_log_hex_byte
     mov     si, msg_newline
-    call    print_string
+    call    fw_log
 
     ; Call INT 13h (our own disk service!)
     push    ds
@@ -31,12 +31,12 @@ chainload_boot:
     ; Error reading drive
     push    ax
     mov     si, msg_dbg_err
-    call    print_string
+    call    fw_log
     pop     ax
     mov     al, ah
-    call    print_hex_byte
-    mov     si, msg_newline
-    call    print_string
+    call    fw_log_hex_byte
+    mov     si, msg_dbg_err_end
+    call    fw_log
     jmp     .try_next_drive
 
 .read_ok:
@@ -49,15 +49,15 @@ chainload_boot:
 
     push    ax
     mov     si, msg_dbg_bad_sig
-    call    print_string
+    call    fw_log
     pop     ax
     push    ax
-    call    print_hex_byte                  ; Low byte
+    call    fw_log_hex_byte                 ; Low byte
     pop     ax
     mov     al, ah
-    call    print_hex_byte                  ; High byte
+    call    fw_log_hex_byte                 ; High byte
     mov     si, msg_newline
-    call    print_string
+    call    fw_log
 
 .try_next_drive:
     pop     dx                              ; Restore current drive
@@ -91,7 +91,6 @@ chainload_boot:
 
     pop     dx                              ; Restore DL = Boot drive number (0x80 for first HDD)
 
-    ; -------------------------------------------------------------------------
     ; Standard PC-compatible MBR handoff
     ;   CPU Mode: 16-bit real mode
     ;   CS:IP = 0x0000:0x7C00
@@ -99,7 +98,6 @@ chainload_boot:
     ;   DS = ES = SS = 0x0000
     ;   SP = 0x7C00
     ;   sti (interrupts enabled)
-    ; -------------------------------------------------------------------------
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
@@ -109,17 +107,6 @@ chainload_boot:
     sti
 
     jmp     MBR_SEG:MBR_OFF
-
-; =============================================================================
-; Helper Print Utilities using fw_log
-; =============================================================================
-print_string:
-    call    fw_log
-    ret
-
-print_hex_byte:
-    call    fw_log_hex_byte
-    ret
 
 align 4
 mbr_dap:
@@ -136,4 +123,5 @@ msg_booting     db "[IPO_Firmware] Bootable storage found on drive 0x", 0
 msg_dots        db "... Handing over to OS!", 10, 0
 msg_no_boot     db "[IPO_Firmware] Boot Failure: No bootable disk found (missing 0x55AA). System halted.", 10, 0
 msg_dbg_err     db "  -> Drive not ready (status AH=0x", 0
+msg_dbg_err_end db ")", 10, 0
 msg_dbg_bad_sig db "  -> Read OK but boot signature mismatch: 0x", 0

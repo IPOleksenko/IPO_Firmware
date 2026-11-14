@@ -6,14 +6,10 @@ ORG 0x0000
 
 %include "boot_constants.inc"
 
-; =============================================================================
-; Offset 0x0000: Magic Signature Header (Validated by Boot_ROM)
-; =============================================================================
-dd      FW_MAGIC                            ; 0x004F5049 ("IPO")
+; Offset 0x0000: Magic header validated by Boot_ROM
+db      "IPO_Firmware"
 
-; =============================================================================
-; Offset 0x0004: Firmware entry point
-; =============================================================================
+; Offset 0x000C: Firmware entry point
 firmware_entry:
     cli
     cld
@@ -29,21 +25,21 @@ firmware_entry:
     xor     esp, esp
     mov     sp, FW_STACK_PTR
 
-    ; 1. Initialize serial port
+    ; Initialize serial port
     call    serial_init
 
-    ; 2. Setup Interrupt Vector Table (IVT) and BDA
+    ; Setup Interrupt Vector Table (IVT) and BDA
     call    ivt_setup
 
-    ; 3. Setup ACPI 1.0 Tables (RSDP in EBDA 0x9FC00, RSDT, MADT)
+    ; Setup ACPI 1.0 Tables (RSDP in EBDA 0x9FC00, RSDT, MADT)
     call    acpi_init_tables
 
-    ; 4. Scan PCI Buses for VGA, SATA AHCI, NVMe, and USB host controllers
+    ; Scan PCI Buses for VGA, SATA AHCI, NVMe, and USB host controllers
     call    pci_scan_devices
     mov     si, msg_pci_ready
     call    fw_log
 
-    ; 5. Initialize Video Subsystem (Mode 03h: 80x25 text) if VGA present
+    ; Initialize Video Subsystem (Mode 03h: 80x25 text) if VGA present
     xor     ax, ax
     mov     es, ax
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
@@ -61,7 +57,7 @@ firmware_entry:
     call    fw_render_header
 .skip_vga_init:
 
-    ; 6. Log initialization diagnostics to screen and serial
+    ; Log initialization diagnostics to screen and serial
     mov     si, msg_fw_banner
     call    fw_log
     mov     si, msg_ivt_ready
@@ -74,22 +70,22 @@ firmware_entry:
     call    fw_log
 .skip_vga_msg:
 
-    ; 7. Enable A20 Gate
+    ; Enable A20 Gate
     call    a20_enable
     mov     si, msg_a20_ready
     call    fw_log
 
-    ; 8. Detect Memory
+    ; Detect Memory
     call    ensure_memory_detected
     mov     si, msg_mem_ready
     call    fw_log
 
-    ; 9. Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
+    ; Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
     call    ps2_controller_init
     mov     si, msg_kbd_ready
     call    fw_log
 
-    ; 10. Initialize Modern Storage Subsystems (SATA AHCI, NVMe, USB)
+    ; Initialize Modern Storage Subsystems (SATA AHCI, NVMe, USB)
     ; Set default drive 0x80 and 0x81 to Legacy ATA PIO
     xor     ax, ax
     mov     es, ax
@@ -127,16 +123,15 @@ firmware_entry:
     jc      .storage_init_done
     ; USB drive active: register Drive 0x82 as USB Flash Drive
     mov     byte [es:SCRATCH_DRV_TYPE_82], DRV_TYPE_USB_BOT
+    mov      byte [es:0x0475], 3
     mov     si, msg_usb_ready
     call    fw_log
 
 .storage_init_done:
-    ; 11. Discover bootable disk, load MBR, and hand off control
+    ; Discover bootable disk, load MBR, and hand off control
     jmp     chainload_boot
 
-; =============================================================================
 ; Serial (COM1) Driver Routines
-; =============================================================================
 serial_init:
     push    dx
     push    ax
@@ -200,30 +195,7 @@ serial_tx_char:
     pop     dx
     ret
 
-serial_print:
-    push    si
-    push    ax
-.loop:
-    lodsb
-    test    al, al
-    jz      .done
-    cmp     al, 10
-    jne     .send
-    push    ax
-    mov     al, 13
-    call    serial_tx_char
-    pop     ax
-.send:
-    call    serial_tx_char
-    jmp     .loop
-.done:
-    pop     ax
-    pop     si
-    ret
-
-; =============================================================================
 ; Firmware Dual Logger (COM1 Serial + VGA Teletype via INT 10h)
-; =============================================================================
 fw_log:
     push    si
     push    ax
@@ -273,9 +245,7 @@ fw_log_hex_byte:
     pop     bx
     ret
 
-; =============================================================================
 ; Included Modules
-; =============================================================================
 %include "pci_scan.asm"
 %include "video_option_rom.asm"
 %include "ahci.asm"
@@ -290,9 +260,7 @@ fw_log_hex_byte:
 %include "kbd.asm"
 %include "chainload.asm"
 
-; =============================================================================
 ; Messages & Data
-; =============================================================================
 msg_fw_banner   db "[IPO_Firmware] Firmware initialized (Shadow RAM mode)", 10, 0
 msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registered)", 10, 0
 msg_acpi_ready  db "[IPO_Firmware] ACPI 1.0 tables installed (RSDP in EBDA, RSDT, MADT)", 10, 0

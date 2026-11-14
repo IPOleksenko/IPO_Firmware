@@ -64,10 +64,8 @@ int10h_handler:
     ; Unsupported function — just return
     jmp     .done
 
-; -----------------------------------------------------------------------------
 ; AH = 0x0E — Teletype Character Output
 ; Input: AL = ASCII char, BH = Page (ignored for page 0), BL = Color (attribute)
-; -----------------------------------------------------------------------------
 .fn_teletype:
     ; Mirror character to COM1 serial for debugging (send CR before LF)
     cmp     al, 10
@@ -166,10 +164,8 @@ int10h_handler:
     call    update_hw_cursor
     jmp     .done
 
-; -----------------------------------------------------------------------------
 ; AH = 0x00 — Set Video Mode
 ; Input: AL = Video Mode (supports Mode 03h)
-; -----------------------------------------------------------------------------
 .fn_set_mode:
     call    vga_hardware_init
     call    vga_clear_screen
@@ -194,10 +190,8 @@ int10h_handler:
     call    update_hw_cursor
     jmp     .done
 
-; -----------------------------------------------------------------------------
 ; AH = 0x01 — Set Cursor Shape
 ; Input: CH = start scan line (bit 5 = 1 hides cursor), CL = end scan line
-; -----------------------------------------------------------------------------
 .fn_set_cursor_shape:
     ; Save to BDA 0x0460
     xor     bx, bx
@@ -220,10 +214,8 @@ int10h_handler:
     out     dx, al                          ; Reg 0x0B: Cursor End
     jmp     .done
 
-; -----------------------------------------------------------------------------
 ; AH = 0x02 — Set Cursor Position
 ; Input: BH = Page, DH = Row, DL = Column
-; -----------------------------------------------------------------------------
 .fn_set_cursor_pos:
     xor     bx, bx
     mov     es, bx
@@ -231,11 +223,9 @@ int10h_handler:
     call    update_hw_cursor
     jmp     .done
 
-; -----------------------------------------------------------------------------
 ; AH = 0x03 — Get Cursor Position and Shape
 ; Input: BH = Page
 ; Output: DH = Row, DL = Column, CH = Start scan, CL = End scan
-; -----------------------------------------------------------------------------
 .fn_get_cursor_pos:
     xor     bx, bx
     mov     es, bx
@@ -261,9 +251,7 @@ int10h_handler:
     pop     ds
     iret
 
-; =============================================================================
 ; Helper Functions for Video Operations
-; =============================================================================
 update_hw_cursor:
     ; DX = (row << 8) | col
     push    ax
@@ -375,9 +363,7 @@ vga_scroll_up:
 .vga_scroll_done:
     ret
 
-; =============================================================================
 ; Render Firmware Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
-; =============================================================================
 fw_render_header:
     push    es
     xor     ax, ax
@@ -397,7 +383,7 @@ fw_render_header:
     mov     ax, VGA_TEXT_SEG
     mov     es, ax
 
-    ; 1. Row 0 Left (col 0): "IPO_Firmware" (attribute 0x0A: Light Green on Black)
+    ; Row 0 Left (col 0): "IPO_Firmware" (attribute 0x0A: Light Green on Black)
     xor     di, di
     mov     si, fw_str_title
     mov     ah, 0x0A
@@ -409,7 +395,7 @@ fw_render_header:
     jmp     .loop_title
 .title_done:
 
-    ; 2. Row 0 Right (col 66): "by IPOleksenko" (attribute 0x0A)
+    ; Row 0 Right (col 66): "by IPOleksenko" (attribute 0x0A)
     ; Col 66 * 2 = 132 byte offset
     mov     di, 132
     mov     si, fw_str_author
@@ -441,10 +427,8 @@ fw_render_header:
 fw_str_title  db "IPO_Firmware", 0
 fw_str_author db "by IPOleksenko", 0
 
-; =============================================================================
 ; VGA Hardware Initialization (Mode 03h: 80x25 text console)
 ; Programs Sequencer, CRTC, GC, AC, DAC, loads 8x16 font, and enables display.
-; =============================================================================
 vga_hardware_init:
     push    es
     xor     ax, ax
@@ -464,12 +448,12 @@ vga_hardware_init:
     mov     ax, cs
     mov     ds, ax
 
-    ; 1. Misc Output Register (Port 0x3C2)
+    ; Misc Output Register (Port 0x3C2)
     mov     dx, 0x03C2
     mov     al, 0x67                        ; 28MHz, color mode (0x3D4), enable RAM
     out     dx, al
 
-    ; 2. Sequencer Registers (Port 0x3C4 / 0x3C5)
+    ; Sequencer Registers (Port 0x3C4 / 0x3C5)
     mov     dx, 0x03C4
     mov     si, vga_seq_data
     mov     cx, 5
@@ -484,7 +468,7 @@ vga_hardware_init:
     inc     ah
     loop    .loop_seq
 
-    ; 3. CRTC: Unlock CRTC registers 0..7 (clear bit 7 of reg 0x11)
+    ; CRTC: Unlock CRTC registers 0..7 (clear bit 7 of reg 0x11)
     mov     dx, CRT_ADDR_PORT               ; 0x3D4
     mov     al, 0x11
     out     dx, al
@@ -508,7 +492,7 @@ vga_hardware_init:
     inc     ah
     loop    .loop_crtc
 
-    ; 4. Graphics Controller Registers (Port 0x3CE / 0x3CF)
+    ; Graphics Controller Registers (Port 0x3CE / 0x3CF)
     mov     dx, 0x03CE
     mov     si, vga_gc_data
     mov     cx, 9
@@ -523,7 +507,7 @@ vga_hardware_init:
     inc     ah
     loop    .loop_gc
 
-    ; 5. Load 8x16 Font into Plane 2 (0xA0000)
+    ; Load 8x16 Font into Plane 2 (0xA0000)
     ; Switch Sequencer to Plane 2 access
     mov     dx, 0x03C4
     mov     ax, 0x0100                      ; Synchronous reset
@@ -575,7 +559,7 @@ vga_hardware_init:
     mov     ax, 0x0E06                      ; Map memory to 0xB8000
     out     dx, ax
 
-    ; 6. Attribute Controller Registers (Port 0x3C0)
+    ; Attribute Controller Registers (Port 0x3C0)
     ; Reset flip-flop by reading 0x3DA
     mov     dx, 0x03DA
     in      al, dx
@@ -592,7 +576,7 @@ vga_hardware_init:
     inc     ah
     loop    .loop_ac
 
-    ; 7. Initialize DAC Palette (256 standard VGA colors)
+    ; Initialize DAC Palette (256 standard VGA colors)
     mov     dx, 0x03C8
     xor     al, al
     out     dx, al                          ; Start at color index 0
@@ -604,7 +588,7 @@ vga_hardware_init:
     out     dx, al
     loop    .loop_dac
 
-    ; 8. Enable Video Output (PAS bit in Attribute Controller)
+    ; Enable Video Output (PAS bit in Attribute Controller)
     mov     dx, 0x03DA
     in      al, dx                          ; Reset flip-flop
     mov     dx, 0x03C0
@@ -621,9 +605,7 @@ vga_hardware_init:
 .vga_hw_done:
     ret
 
-; =============================================================================
 ; VGA Mode 03h Register Tables
-; =============================================================================
 vga_seq_data    db 0x03, 0x00, 0x03, 0x00, 0x02
 vga_crtc_data   db 0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F
                 db 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00

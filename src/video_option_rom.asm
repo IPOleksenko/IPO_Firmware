@@ -4,9 +4,7 @@
 
 BITS 16
 
-; =============================================================================
 ; video_option_rom_init — Search for GPU Option ROM and initialize graphics hardware
-; =============================================================================
 video_option_rom_init:
     pushad
     push    ds
@@ -27,10 +25,8 @@ video_option_rom_init:
     or      eax, edx
     mov     esi, eax                        ; ESI = Base PCI address
 
-    ; -------------------------------------------------------------------------
-    ; 1. Enable Expansion ROM Decode in PCI Config Space (offset 0x30)
+    ; Enable Expansion ROM Decode in PCI Config Space (offset 0x30)
     ;    Set base address to 0x000C0000 and bit 0 = 1 (Address Decode Enable)
-    ; -------------------------------------------------------------------------
     mov     eax, esi
     or      eax, 0x30
     mov     ecx, 0x000C0001                 ; Base 0x000C0000 | Decode Enable
@@ -46,10 +42,8 @@ video_option_rom_init:
     or      eax, 0x04
     call    pci_write_dword
 
-    ; -------------------------------------------------------------------------
-    ; 2. Check for Option ROM Signature at 0xC000:0x0000
+    ; Check for Option ROM Signature at 0xC000:0x0000
     ;    Must start with 0x55, 0xAA (word 0xAA55)
-    ; -------------------------------------------------------------------------
     mov     ax, 0xC000
     mov     es, ax
     mov     ax, [es:0]
@@ -70,10 +64,8 @@ video_option_rom_init:
     cmp     word [es:0], 0xAA55
     jne     .no_video_rom
 
-    ; -------------------------------------------------------------------------
-    ; 2b. Verify Option ROM Length & Checksum
-    ;     Byte 2 = length in 512-byte blocks. Sum of all bytes mod 256 must be 0.
-    ; -------------------------------------------------------------------------
+    ; Verify Option ROM Length & Checksum
+    ; Byte 2 = length in 512-byte blocks. Sum of all bytes mod 256 must be 0.
     movzx   ecx, byte [es:2]
     test    ecx, ecx
     jz      .no_video_rom
@@ -94,10 +86,117 @@ video_option_rom_init:
     mov     si, msg_dbg_video_rom_call
     call    fw_log
 
-    ; -------------------------------------------------------------------------
-    ; 3. Execute Video Option ROM Entry Point (Far Call to 0xC000:0x0003)
+    ; Shadow Video Option ROM into DRAM (0xC0000 - 0xCFFFF) via PAM1/PAM2
+    ; and pass PCI BDF (AH = Bus, AL = DevFn) in AX per PCI Firmware Spec.
+    push    esi
+    push    ds
+    push    es
+    xor     ax, ax
+    mov     ds, ax
+    mov     bx, [ds:SCRATCH_HOST_DID]       ; Host Bridge DID
+
+    ; Enable Write-Only to DRAM (0x22) on PAM1..PAM2 so reads come from PCI ROM
+    ; and writes go to Shadow RAM at 0xC0000-0xCFFFF
+    cmp     bx, 0x2500
+    jae     .vrom_pam_write_q35
+    mov     eax, 0x80000058
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFE                      ; PAM1 (0x5A) and PAM2 (0x5B)
+    mov     ax, 0x2222
+    out     dx, ax
+    jmp     .vrom_copy
+.vrom_pam_write_q35:
+    mov     eax, 0x80000090
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFD                      ; PAM1 (0x91)
+    mov     al, 0x22
+    out     dx, al
+    inc     dx                              ; PAM2 (0x92)
+    out     dx, al
+
+.vrom_copy:
+    mov     ax, 0xC000
+    mov     ds, ax
+    mov     es, ax
+    movzx   ecx, byte [es:2]
+    shl     ecx, 8                          ; Word count = (blocks * 512) / 2
+    xor     si, si
+    xor     di, di
+    cld
+    rep     movsw
+
+    ; Switch PAM1..PAM2 to Read/Write DRAM (0x33) so Option ROM executes from RAM
+    cmp     bx, 0x2500
+    jae     .vrom_pam_rw_q35
+    mov     eax, 0x80000058
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFE
+    mov     ax, 0x3333
+    out     dx, ax
+    jmp     .vrom_chk_shadow
+.vrom_pam_rw_q35:
+    mov     eax, 0x80000090
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFD
+    mov     al, 0x33
+    out     dx, al
+    inc     dx
+    out     dx, al
+
+.vrom_chk_shadow:
+    pop     es
+    pop     ds
+    pop     esi
+
+    ; If Shadow DRAM now holds 0xAA55, we can close PCI Expansion ROM BAR (offset 0x30).
+    ; If closing BAR 0x30 hides 0xAA55 (e.g. emulator where ROM BAR overrides PAM), re-open it.
+    mov     eax, esi
+    or      eax, 0x30
+    xor     ecx, ecx
+    call    pci_write_dword
+    cmp     word [es:0], 0xAA55
+    je      .vrom_bar_done
+
+    ; Re-open PCI Expansion ROM BAR and disable PAM1/PAM2 DRAM read override
+    cmp     bx, 0x2500
+    jae     .vrom_pam_off_q35
+    mov     eax, 0x80000058
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFE
+    xor     ax, ax
+    out     dx, ax
+    jmp     .vrom_reopen_bar
+.vrom_pam_off_q35:
+    mov     eax, 0x80000090
+    mov     dx, 0x0CF8
+    out     dx, eax
+    mov     dx, 0x0CFD
+    xor     al, al
+    out     dx, al
+    inc     dx
+    out     dx, al
+.vrom_reopen_bar:
+    mov     eax, esi
+    or      eax, 0x30
+    mov     ecx, 0x000C0001
+    call    pci_write_dword
+
+.vrom_bar_done:
+    ; Load PCI Bus/DevFn into AX (AH = Bus, AL = DevFn) per PCI Firmware Spec
+    push    ds
+    xor     bx, bx
+    mov     ds, bx
+    mov     ah, [ds:SCRATCH_VGA_BUS]
+    mov     al, [ds:SCRATCH_VGA_DEVFN]
+    pop     ds
+
+    ; Execute Video Option ROM Entry Point (Far Call to 0xC000:0x0003)
     ;    Per PCI 2.2 spec, the Video Option ROM entry point is at offset 0x0003
-    ; -------------------------------------------------------------------------
     push    cs
     push    word .video_rom_ret
     push    word 0xC000

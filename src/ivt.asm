@@ -15,7 +15,7 @@ ivt_setup:
 
     mov     bx, cs                          ; BX = CS (0xF000 in Shadow RAM mode)
 
-    ; 1. Point all 256 vectors to default_int_handler
+    ; Point all 256 vectors to default_int_handler
     xor     ax, ax
     mov     es, ax
     xor     di, di
@@ -27,7 +27,7 @@ ivt_setup:
     add     di, 4
     loop    .loop_default
 
-    ; 2. Install Master PIC Hardware IRQ Handlers (INT 08h - 0x0F)
+    ; Install Master PIC Hardware IRQ Handlers (INT 08h - 0x0F)
     ; Vectors 0x20..0x3C
     mov     cx, 8
     mov     di, 0x0020
@@ -37,7 +37,7 @@ ivt_setup:
     add     di, 4
     loop    .loop_pic1
 
-    ; 3. Install Slave PIC Hardware IRQ Handlers (INT 70h - 77h)
+    ; Install Slave PIC Hardware IRQ Handlers (INT 70h - 77h)
     ; Vectors 0x01C0..0x01DC (0x70 * 4 = 0x01C0)
     mov     cx, 8
     mov     di, 0x01C0
@@ -47,7 +47,7 @@ ivt_setup:
     add     di, 4
     loop    .loop_pic2
 
-    ; 4. Dedicated IRQ Handlers
+    ; Dedicated IRQ Handlers
     ; IRQ 0 (INT 08h): System Timer Tick
     mov     word [es:0x0020], int08h_timer_handler
     mov     word [es:0x0022], bx
@@ -56,7 +56,7 @@ ivt_setup:
     mov     word [es:0x0024], int09h_keyboard_handler
     mov     word [es:0x0026], bx
 
-    ; 5. Register implemented firmware interrupt handlers
+    ; Register implemented firmware interrupt handlers
     ; INT 10h (Video Services) — Vector 0x10 * 4 = 0x0040
     mov     word [es:0x0040], int10h_handler
     mov     word [es:0x0042], bx
@@ -97,7 +97,7 @@ ivt_setup:
     mov     word [es:0x0070], default_int_handler
     mov     word [es:0x0072], bx
 
-    ; 6. Setup standard BDA at 0x0040:0x0000 (0x0400)
+    ; Setup standard BDA at 0x0040:0x0000 (0x0400)
     mov     word [es:0x0400], 0x03F8            ; COM1 base I/O port address
     mov     word [es:0x040E], 0x9FC0            ; EBDA Base Segment (0x9FC0:0x0000)
     mov     word [es:0x0410], 0x4223            ; Equipment word (color 80x25, mouse, coprocessor, floppy)
@@ -111,12 +111,34 @@ ivt_setup:
     mov     word [es:0x0480], 0x001E            ; Keyboard buffer start offset
     mov     word [es:0x0482], 0x003E            ; Keyboard buffer end offset
 
-    ; 7. Initialize PIT (8254) Channel 0: Mode 3 (Square Wave), 18.2 Hz (divisor 65536 = 0)
+    ; Initialize PIT (8254) Channel 0: Mode 3 (Square Wave), 18.2 Hz (divisor 65536 = 0)
     mov     al, 0x36                            ; Channel 0, lobyte/hibyte, Mode 3, binary
     out     0x43, al
     xor     al, al
     out     0x40, al                            ; Divisor low = 0x00
     out     0x40, al                            ; Divisor high = 0x00 (65536)
+
+    ; Initialize 8259A Master & Slave PICs (cascade mode) and unmask IRQ 0, 1, 2
+    mov     al, 0x11                            ; ICW1: Edge-triggered, cascade, ICW4 needed
+    out     0x20, al
+    out     0xA0, al
+    mov     al, 0x08                            ; ICW2 Master: INT 08h-0Fh
+    out     0x21, al
+    mov     al, 0x70                            ; ICW2 Slave: INT 70h-77h
+    out     0xA1, al
+    mov     al, 0x04                            ; ICW3 Master: Slave on IRQ 2
+    out     0x21, al
+    mov     al, 0x02                            ; ICW3 Slave: Cascade identity 2
+    out     0xA1, al
+    mov     al, 0x01                            ; ICW4: 8086 mode
+    out     0x21, al
+    out     0xA1, al
+
+    ; OCW1: Unmask IRQ 0 (Timer), IRQ 1 (Keyboard), IRQ 2 (Cascade); mask others
+    mov     al, 0xF8
+    out     0x21, al
+    mov     al, 0xFF
+    out     0xA1, al
 
     pop     bx
     pop     ax
@@ -125,9 +147,7 @@ ivt_setup:
     pop     es
     ret
 
-; =============================================================================
 ; PIC EOI Handlers
-; =============================================================================
 
 ; Master PIC (IRQ 0-7) Default Handler
 pic1_default_handler:
@@ -150,10 +170,8 @@ pic2_default_handler:
 default_int_handler:
     iret
 
-; =============================================================================
 ; IRQ 0 (INT 08h): System Timer Tick Handler
 ; Increments 32-bit tick count in BDA, handles midnight wrap, and calls INT 1Ch
-; =============================================================================
 int08h_timer_handler:
     push    ds
     push    eax
@@ -182,51 +200,8 @@ int08h_timer_handler:
     pop     ds
     iret
 
-; =============================================================================
-; IRQ 1 (INT 09h): PS/2 Keyboard Hardware Interrupt
-; Reads scancode from port 0x60, inserts into BDA buffer, and sends EOI
-; =============================================================================
-int09h_keyboard_handler:
-    push    ds
-    push    ax
-    push    bx
-    push    si
-
-    xor     ax, ax
-    mov     ds, ax                              ; DS = 0x0000
-
-    in      al, 0x60                            ; Read scancode from Keyboard Controller
-
-    ; Put key into BDA circular buffer
-    mov     si, [ds:0x041C]                     ; SI = buffer tail
-    mov     bx, si
-    add     bx, 2
-    cmp     bx, [ds:0x0482]                     ; End of buffer (0x003E)?
-    jb      .wrap_ok
-    mov     bx, [ds:0x0480]                     ; Wrap to start (0x001E)
-.wrap_ok:
-    cmp     bx, [ds:0x041A]                     ; Buffer full (tail == head)?
-    je      .kbd_eoi                            ; Drop scancode if buffer full
-
-    ; Write scancode into buffer at [0x0400 + SI]
-    mov     [ds:0x0400 + si], al
-    mov     byte [ds:0x0400 + si + 1], 0
-    mov     [ds:0x041C], bx                     ; Update tail
-
-.kbd_eoi:
-    mov     al, 0x20
-    out     0x20, al                            ; EOI to Master PIC
-
-    pop     si
-    pop     bx
-    pop     ax
-    pop     ds
-    iret
-
-; =============================================================================
 ; INT 11h: Equipment Determination
 ; Returns: AX = Equipment Word from BDA 0x0410
-; =============================================================================
 int11h_handler:
     push    ds
     xor     ax, ax
@@ -235,10 +210,8 @@ int11h_handler:
     pop     ds
     iret
 
-; =============================================================================
 ; INT 12h: Conventional Memory Size
 ; Returns: AX = Memory size in KB (0 to 640) from BDA 0x0413
-; =============================================================================
 int12h_handler:
     push    ds
     xor     ax, ax
@@ -247,105 +220,19 @@ int12h_handler:
     pop     ds
     iret
 
-; =============================================================================
 ; INT 14h: Serial Port Services
-; =============================================================================
 int14h_handler:
     ; AH=03h: Get port status
     mov     ah, 0x60                            ; Line status: Transmitter empty, THR empty
     mov     al, 0x00                            ; Modem status
     iret
 
-; =============================================================================
-; INT 16h: Keyboard Services
-; =============================================================================
-int16h_handler:
-    sti
-    cmp     ah, 0x00
-    je      .fn_read_key
-    cmp     ah, 0x10
-    je      .fn_read_key
-    cmp     ah, 0x01
-    je      .fn_check_key
-    cmp     ah, 0x11
-    je      .fn_check_key
-    cmp     ah, 0x02
-    je      .fn_get_shift
-
-    iret
-
-.fn_read_key:
-    push    ds
-    push    si
-    push    bx
-    xor     bx, bx
-    mov     ds, bx
-.wait_key:
-    mov     si, [ds:0x041A]                     ; Head
-    cmp     si, [ds:0x041C]                     ; Tail
-    jne     .consume_key
-    hlt                                         ; Wait for keyboard interrupt
-    jmp     .wait_key
-
-.consume_key:
-    mov     ax, [ds:0x0400 + si]
-    add     si, 2
-    cmp     si, [ds:0x0482]
-    jb      .head_ok
-    mov     si, [ds:0x0480]
-.head_ok:
-    mov     [ds:0x041A], si                     ; Advance head
-    pop     bx
-    pop     si
-    pop     ds
-    iret
-
-.fn_check_key:
-    push    ds
-    push    si
-    push    bp
-    mov     bp, sp
-    xor     si, si
-    mov     ds, si
-    mov     si, [ds:0x041A]
-    cmp     si, [ds:0x041C]
-    jne     .key_ready
-
-    ; No key available: set ZF in caller FLAGS
-    or      byte [bp + 10], 0x40                ; Bit 6 = ZF
-    xor     ax, ax
-    pop     bp
-    pop     si
-    pop     ds
-    iret
-
-.key_ready:
-    ; Key available: clear ZF in caller FLAGS, return next key in AX
-    and     byte [bp + 10], ~0x40               ; Clear ZF
-    mov     ax, [ds:0x0400 + si]
-    pop     bp
-    pop     si
-    pop     ds
-    iret
-
-.fn_get_shift:
-    push    ds
-    xor     ax, ax
-    mov     ds, ax
-    mov     al, [ds:0x0417]                     ; BDA keyboard shift flags
-    pop     ds
-    iret
-
-; =============================================================================
 ; INT 17h: Printer Services
-; =============================================================================
 int17h_handler:
     mov     ah, 0x90                            ; Status: Printer not busy / selected
     iret
 
-; =============================================================================
 ; INT 1Ah: Time of Day Services
-; =============================================================================
 int1Ah_handler:
     sti
     cmp     ah, 0x00
@@ -385,6 +272,9 @@ int1Ah_handler:
     jmp     .exit
 
 .read_rtc_time:
+    ; Wait for RTC Update-In-Progress (UIP, Reg 0x0A bit 7) to clear
+    call    rtc_wait_uip
+
     ; CH = hours, CL = minutes, DH = seconds in BCD
     mov     al, 0x04
     out     CMOS_INDEX_PORT, al
@@ -405,6 +295,9 @@ int1Ah_handler:
     jmp     .exit
 
 .read_rtc_date:
+    ; Wait for RTC Update-In-Progress (UIP, Reg 0x0A bit 7) to clear
+    call    rtc_wait_uip
+
     ; CH = century, CL = year, DH = month, DL = day in BCD
     mov     al, 0x32                            ; Century
     out     CMOS_INDEX_PORT, al
@@ -438,3 +331,17 @@ int1Ah_handler:
     or      byte [bp + 6], 0x01
     pop     bp
     iret
+
+rtc_wait_uip:
+    push    cx
+    mov     cx, 0xFFFF
+.uip_loop:
+    mov     al, 0x0A
+    out     CMOS_INDEX_PORT, al
+    in      al, CMOS_DATA_PORT
+    test    al, 0x80
+    jz      .uip_ready
+    loop    .uip_loop
+.uip_ready:
+    pop     cx
+    ret
