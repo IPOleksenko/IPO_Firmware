@@ -1,17 +1,15 @@
-# =============================================================================
-#                 FIRMWARE BUILD RULES
-# =============================================================================
+# Firmware build rules
 
 firmware: $(FIRMWARE_BIN)
 
-# 1. Compile firmware payload (up to 32 KiB) for the documented boot handoff interface
+# Assemble raw firmware payload (max 32 KiB)
 $(FIRMWARE_PAYLOAD): $(SRCS)
 	@mkdir -p $(BIN)
 	$(ASM) $(ASM_FLAGS) $(SRC)/entry.asm -o $@
 	@size=$$(stat -c %s $@); \
 	echo "[IPO_Firmware] Firmware payload generated: $@ ($$size bytes)"; \
 	if [ $$size -gt 32768 ]; then \
-		echo "ERROR: firmware.bin exceeds 32KB payload limit ($$size bytes)!" >&2; \
+		echo "ERROR: firmware.bin exceeds 32 KiB payload limit ($$size bytes)!" >&2; \
 		exit 1; \
 	fi
 
@@ -19,7 +17,7 @@ ifneq ($(ROM_BIN),)
 .PHONY: $(FIRMWARE_BIN)
 endif
 
-# 2. Build bootable binary image for QEMU emulation or hardware flashing
+# Build final ROM image for emulation or flash chips
 $(FIRMWARE_BIN): $(FIRMWARE_PAYLOAD) $(TOOLS)/build_rom.py
 	@mkdir -p $(BUILD)
 	@rom_target="$(ROM_BIN)"; \

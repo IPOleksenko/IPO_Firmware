@@ -1,5 +1,4 @@
-; a20.asm — A20 Gate enablement via Fast A20 Gate (port 0x92)
-; and 1MB wrap-around verification test
+; A20 line enablement (Fast A20 port 0x92 with PS/2 controller fallback)
 
 BITS 16
 
@@ -9,21 +8,19 @@ a20_enable:
     push    ax
     push    cx
 
-    ; Check if A20 is already enabled
     call    a20_test
     test    ax, ax
     jnz     .a20_done
 
-    ; Attempt Fast A20 Gate via Port 0x92
+    ; Try Fast A20 gate (port 0x92)
     in      al, 0x92
     test    al, 0x02
     jnz     .check_after_set
     or      al, 0x02
-    and     al, 0xFE                        ; Never set bit 0 (system reset!)
+    and     al, 0xFE                        ; Keep bit 0 clear (system reset)
     out     0x92, al
 
 .check_after_set:
-    ; Small delay / loop waiting for A20 to settle
     mov     cx, 100
 .wait_loop:
     call    a20_test
@@ -31,15 +28,15 @@ a20_enable:
     jnz     .a20_done
     loop    .wait_loop
 
-    ; Fallback: Enable A20 via 8042 Keyboard Controller (Command 0xD1 -> 0xDF)
+    ; Fallback: enable A20 through PS/2 controller output port (0xD1 -> 0xDF)
     call    ps2_wait_write
-    mov     al, 0xD1                        ; Write Output Port command
+    mov     al, 0xD1                        ; Write output port
     out     0x64, al
     call    ps2_wait_write
-    mov     al, 0xDF                        ; Enable A20 line (bit 1 = 1)
+    mov     al, 0xDF                        ; Set A20 gate (bit 1)
     out     0x60, al
     call    ps2_wait_write
-    mov     al, 0xFF                        ; Pulse/Null command to latch output port
+    mov     al, 0xFF                        ; Pulse/null command to latch output port
     out     0x64, al
     call    ps2_wait_write
 
@@ -50,38 +47,35 @@ a20_enable:
     pop     ds
     ret
 
-; a20_test — Checks if A20 line is enabled by testing memory wrap-around.
-; Returns: AX = 1 if enabled, AX = 0 if disabled.
+; Test A20 by checking whether 0x0000:0x0500 and 0xFFFF:0x0510 (1 MiB alias) wrap.
+; Returns AX = 1 if enabled, 0 if disabled.
 a20_test:
     push    cx
     push    si
     push    di
 
     xor     ax, ax
-    mov     ds, ax                          ; DS = 0x0000 (phys 0x00000)
-    mov     si, 0x0500                      ; DS:SI = 0x0000:0x0500 (phys 0x000500)
+    mov     ds, ax
+    mov     si, 0x0500                      ; Phys 0x000500
 
     mov     ax, 0xFFFF
-    mov     es, ax                          ; ES = 0xFFFF
-    mov     di, 0x0510                      ; ES:DI = 0xFFFF:0x0510 (phys 0x100500)
+    mov     es, ax
+    mov     di, 0x0510                      ; Phys 0x100500
 
-    ; Save original values
     mov     al, [ds:si]
     mov     ah, [es:di]
 
-    ; Write test pattern
     mov     byte [ds:si], 0x00
     mov     byte [es:di], 0xFF
 
-    ; If memory wrapped, byte [ds:si] will now be 0xFF
+    ; Wrapped memory aliases 0x100500 onto 0x000500
     cmp     byte [ds:si], 0xFF
-    mov     cx, 0                           ; Assume disabled
+    mov     cx, 0
     je      .restore
 
-    mov     cx, 1                           ; Enabled!
+    mov     cx, 1
 
 .restore:
-    ; Restore original values
     mov     [ds:si], al
     mov     [es:di], ah
 

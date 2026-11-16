@@ -1,4 +1,4 @@
-; boot_constants.inc — Firmware and boot constants (16-bit Real Mode, Shadow RAM 0xF000:0x0000)
+; Shared firmware and boot constants (16-bit Real Mode, shadow RAM 0xF000:0x0000)
 
 %ifndef BOOT_CONSTANTS_INC
 %define BOOT_CONSTANTS_INC
@@ -46,11 +46,20 @@ PCI_PROGIF_EHCI     equ 0x20
 PCI_PROGIF_XHCI     equ 0x30
 
 ; Scratch RAM offsets (Segment 0x0000)
-SCRATCH_HOST_DID    equ 0x050A      ; word: Host Bridge Device ID
-SCRATCH_MEM_FLAG    equ 0x0510      ; byte: 1 = memory already detected
-SCRATCH_TOTAL_RAM   equ 0x0514      ; dword: total RAM in bytes
-SCRATCH_RAM_1_16M   equ 0x0518      ; word: RAM 1-16MB in KB
-SCRATCH_RAM_ABOVE16 equ 0x051A      ; word: RAM above 16MB in 64KB blocks
+SCRATCH_HOST_DID       equ 0x050A   ; word: Host Bridge Device ID
+SCRATCH_MEM_FLAG       equ 0x0510   ; byte: 1 = memory already detected
+SCRATCH_TOTAL_RAM      equ 0x0514   ; dword: total low RAM in bytes (clamped <= TOLUD)
+SCRATCH_RAM_1_16M      equ 0x0518   ; word: RAM 1-16 MiB in KiB
+SCRATCH_RAM_ABOVE16    equ 0x051A   ; word: RAM above 16 MiB in 64 KiB blocks
+SCRATCH_ACPI_BASE      equ 0x0520   ; dword: physical base of 128 KiB ACPI table block
+SCRATCH_ACPI_TOP       equ 0x0524   ; dword: low RAM top before ACPI reservation
+SCRATCH_CPU_COUNT      equ 0x0528   ; word: discovered hardware CPU count
+SCRATCH_IOAPIC_FOUND   equ 0x052A   ; byte: 1 if IOAPIC present at 0xFEC00000
+SCRATCH_PCI_IO_NEXT    equ 0x052C   ; word: next free PCI I/O port base (starts 0xC000)
+SCRATCH_PCI_MMIO_NEXT  equ 0x0530   ; dword: next free PCI MMIO32 base (starts 0xFE800000)
+SCRATCH_LAPIC_BASE     equ 0x0534   ; dword: physical Local APIC base (default 0xFEE00000)
+SCRATCH_RAM_ABOVE4G_LO equ 0x0538   ; dword: low32 bytes of RAM above 4 GiB
+SCRATCH_RAM_ABOVE4G_HI equ 0x053C   ; dword: high32 bytes of RAM above 4 GiB
 
 ; Device Registry in Scratch RAM
 SCRATCH_AHCI_FOUND  equ 0x0540
@@ -102,10 +111,10 @@ DRV_TYPE_SATA_AHCI  equ 0x02
 DRV_TYPE_USB_BOT    equ 0x03
 DRV_TYPE_NVME       equ 0x04
 
-; Buffers for AHCI and NVMe transfers in lower conventional memory (0x1000-0x6FFF)
-AHCI_CMD_LIST_ADDR  equ 0x1000      ; 1KB Command List (1024-byte aligned)
-AHCI_RX_FIS_ADDR    equ 0x1400      ; 256B Received FIS (256-byte aligned)
-AHCI_CMD_TAB_ADDR   equ 0x1800      ; Command Table + PRDT (128-byte aligned)
+; DMA/queue buffers in low conventional memory (0x1000-0x6FFF)
+AHCI_CMD_LIST_ADDR  equ 0x1000      ; 1 KiB Command List (1 KiB aligned)
+AHCI_RX_FIS_ADDR    equ 0x1400      ; 256 B Received FIS (256 B aligned)
+AHCI_CMD_TAB_ADDR   equ 0x1800      ; Command Table + PRDT (128 B aligned)
 
 NVME_ADMIN_SQ_ADDR  equ 0x3000
 NVME_ADMIN_CQ_ADDR  equ 0x4000

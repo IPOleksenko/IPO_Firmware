@@ -1,16 +1,13 @@
-; chainload.asm — Discovers bootable disk, reads MBR to 0x7C00, and jumps
-; Firmware MBR handoff
+; Probe bootable disks (0x80..0x82), load MBR to 0x0000:0x7C00, and hand off execution.
 
 BITS 16
 
 chainload_boot:
-    ; Search firmware drive numbers 0x80-0x82 (ATA/AHCI/NVMe and USB)
     mov     dl, 0x80
 
 .drive_scan_loop:
-    push    dx                              ; Preserve current drive across calls
+    push    dx
 
-    ; Print probe message
     mov     si, msg_probing
     call    fw_log
     mov     al, dl
@@ -18,7 +15,7 @@ chainload_boot:
     mov     si, msg_newline
     call    fw_log
 
-    ; Call INT 13h (our own disk service!)
+    ; Read LBA 0 using INT 13h extended read
     push    ds
     mov     ax, cs
     mov     ds, ax
@@ -28,7 +25,6 @@ chainload_boot:
     pop     ds
     jnc     .read_ok
 
-    ; Error reading drive
     push    ax
     mov     si, msg_dbg_err
     call    fw_log
@@ -40,7 +36,7 @@ chainload_boot:
     jmp     .try_next_drive
 
 .read_ok:
-    ; Check MBR signature 0x55AA at offset 510 (physical 0x7DFE)
+    ; Verify 0xAA55 MBR signature at offset 510 (0x7DFE)
     xor     ax, ax
     mov     es, ax
     mov     ax, [es:0x7DFE]
@@ -52,20 +48,19 @@ chainload_boot:
     call    fw_log
     pop     ax
     push    ax
-    call    fw_log_hex_byte                 ; Low byte
+    call    fw_log_hex_byte                 ; low byte
     pop     ax
     mov     al, ah
-    call    fw_log_hex_byte                 ; High byte
+    call    fw_log_hex_byte                 ; high byte
     mov     si, msg_newline
     call    fw_log
 
 .try_next_drive:
-    pop     dx                              ; Restore current drive
-    inc     dl                              ; Next drive (0x80 -> 0x81 -> 0x82)
-    cmp     dl, 0x83                        ; Stop after checking 0x80, 0x81, and 0x82
+    pop     dx
+    inc     dl
+    cmp     dl, 0x83
     jb      .drive_scan_loop
 
-    ; No bootable drive found!
     mov     si, msg_no_boot
     call    fw_log
 .halt:
@@ -73,8 +68,8 @@ chainload_boot:
     jmp     .halt
 
 .boot_drive_found:
-    pop     dx                              ; Restore boot drive into DL
-    push    dx                              ; Keep safe on stack during logging
+    pop     dx
+    push    dx
     mov     si, msg_booting
     call    fw_log
     mov     al, dl
@@ -82,22 +77,17 @@ chainload_boot:
     mov     si, msg_dots
     call    fw_log
 
-    ; Clear screen and reset cursor so booted OS has a clean console
+    ; Clear display and reset BDA/hardware cursor before jumping to MBR
     call    vga_clear_screen
     xor     ax, ax
     mov     es, ax
     mov     word [es:0x0450], 0
     call    update_hw_cursor
 
-    pop     dx                              ; Restore DL = Boot drive number (0x80 for first HDD)
+    pop     dx
 
-    ; Standard PC-compatible MBR handoff
-    ;   CPU Mode: 16-bit real mode
-    ;   CS:IP = 0x0000:0x7C00
-    ;   DL = Boot drive number (0x80 for first HDD)
-    ;   DS = ES = SS = 0x0000
-    ;   SP = 0x7C00
-    ;   sti (interrupts enabled)
+    ; MBR handoff ABI: 16-bit Real Mode, CS:IP=0000:7C00, DL=boot drive,
+    ; DS=ES=SS=0000, SP=7C00, IF=1
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
@@ -110,11 +100,11 @@ chainload_boot:
 
 align 4
 mbr_dap:
-    db 16                                   ; Size = 16
-    db 0                                    ; Reserved = 0
-    dw 1                                    ; Sector count = 1
-    dw MBR_OFF                              ; Offset = 0x7C00
-    dw MBR_SEG                              ; Segment = 0x0000
+    db 16                                   ; DAP size
+    db 0                                    ; reserved
+    dw 1                                    ; sector count
+    dw MBR_OFF                              ; dst offset
+    dw MBR_SEG                              ; dst segment
     dq 0                                    ; LBA 0
 
 msg_probing     db "[IPO_Firmware] Probing drive 0x", 0

@@ -1,11 +1,8 @@
-; pci_scan.asm — PCI Bus Enumeration and Device Discovery
-; Scans PCI buses to discover VGA, SATA AHCI, and USB host controllers.
-; Stores discovered hardware info in safe Scratch RAM (Segment 0x0000).
+; PCI bus enumeration (buses 0..7), PIRQ/ELCR IRQ routing, BAR allocator, and boot device tracking
 
 BITS 16
 
-; PCI Configuration Space Helper Routines (Local to Firmware)
-
+; PCI config space access (mechanism 1, 0xCF8/0xCFC)
 pci_read_dword:
     push    edx
     and     eax, 0xFFFFFFFC
@@ -31,55 +28,80 @@ pci_write_dword:
     pop     edx
     ret
 
-; pci_scan_devices — Scan PCI buses 0..3 for boot-critical hardware
-; Output: Updates Scratch RAM registry at 0x0000:0x0540..0x056F
+; Scan PCI buses 0..7, slots 0..31 (multi-function aware)
 pci_scan_devices:
     pushad
     push    es
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
+    mov     es, ax                          ; scratch RAM segment
 
-    ; Clear discovery flags in Scratch RAM
+    ; Reset discovered flags and BAR allocation cursors
     mov     byte [es:SCRATCH_AHCI_FOUND], 0
     mov     byte [es:SCRATCH_USB_FOUND], 0
     mov     byte [es:SCRATCH_VGA_FOUND], 0
     mov     byte [es:SCRATCH_NVME_FOUND], 0
     mov     byte [es:SCRATCH_VIDEO_ROM_ACTIVE], 0
     mov     dword [es:SCRATCH_DRV_TYPE_80], 0
+    mov     word [es:SCRATCH_PCI_IO_NEXT], 0xC000
+    mov     dword [es:SCRATCH_PCI_MMIO_NEXT], 0xFE800000
 
-    ; Scan buses 0..3 (sufficient for root and secondary buses in standard PCs)
-    xor     bx, bx                          ; BH = Bus (0..3), BL = Device (0..31)
+    xor     bx, bx                          ; BH = bus (0..7), BL = slot (0..31)
 
 .bus_loop:
-    xor     bl, bl                          ; Device 0..31
+    xor     bl, bl
 .dev_loop:
-    xor     cl, cl                          ; Function 0..7
+    ; Probe function 0 first before checking multi-function bit
+    movzx   eax, bh
+    shl     eax, 16
+    movzx   edx, bl
+    shl     edx, 11
+    or      eax, edx
+    call    pci_read_dword
+    cmp     ax, 0xFFFF
+    je      .next_dev
+    test    ax, ax
+    jz      .next_dev
+
+    ; Header Type (reg 0x0C, bits 23:16)
+    movzx   eax, bh
+    shl     eax, 16
+    movzx   edx, bl
+    shl     edx, 11
+    or      eax, edx
+    or      eax, 0x0C
+    call    pci_read_dword
+    shr     eax, 16
+    mov     ch, 1                           ; 1 function unless bit 7 is set
+    test    al, 0x80
+    jz      .scan_funcs
+    mov     ch, 8
+
+.scan_funcs:
+    xor     cl, cl
 .fn_loop:
-    call    .check_function
+    call    .process_function
     inc     cl
-    cmp     cl, 8
+    cmp     cl, ch
     jb      .fn_loop
 
+.next_dev:
     inc     bl
     cmp     bl, 32
     jb      .dev_loop
 
     inc     bh
-    cmp     bh, 4
+    cmp     bh, 8
     jb      .bus_loop
 
     pop     es
     popad
     ret
 
-; Helper: .check_function
-; Input: BH = Bus, BL = Device, CL = Function, ES = 0x0000
-; Output: CF = 0 if device exists, CF = 1 if nonexistent (VID=0xFFFF)
-.check_function:
+; Input: BH=bus, BL=slot, CL=func, ES=0x0000
+.process_function:
     pushad
 
-    ; Build base PCI address: 0x80000000 | (bus << 16) | (dev << 11) | (fn << 8)
     movzx   eax, bh
     shl     eax, 16
     movzx   edx, bl
@@ -88,44 +110,71 @@ pci_scan_devices:
     movzx   edx, cl
     shl     edx, 8
     or      eax, edx
-    mov     esi, eax                        ; ESI = Base PCI address for this bus:dev:fn
+    mov     esi, eax                        ; base PCI config address
 
-    ; Read Vendor ID / Device ID (reg 0x00)
     mov     eax, esi
     call    pci_read_dword
     cmp     ax, 0xFFFF
-    je      .fn_absent
+    je      .fn_done
     test    ax, ax
-    jz      .fn_absent
+    jz      .fn_done
 
-    ; Read Class Code, Subclass, ProgIF (reg 0x08)
-    ; Reg 0x08: [Class(31:24) | Subclass(23:16) | ProgIF(15:8) | RevID(7:0)]
+    ; EDI = Class/Subclass/ProgIF/Rev (reg 0x08)
     mov     eax, esi
     or      eax, 0x08
     call    pci_read_dword
-    mov     edi, eax                        ; EDI = Class register value
+    mov     edi, eax
 
-    ; Check for Bridge devices (Class 0x06: ISA 0x01, Other 0x80) to enable Power Management / ACPI I/O (base 0x0600)
-    shr     eax, 24                         ; AL = Class
-    cmp     al, 0x06                        ; Class 0x06 = Bridge Device
-    jne     .pm_done
+    ; Bridge devices (class 0x06)
+    mov     eax, edi
+    shr     eax, 24
+    cmp     al, 0x06
+    jne     .not_bridge
 
     mov     eax, edi
     shr     eax, 16
-    and     al, 0xFF                        ; AL = Subclass
+    and     al, 0xFF
+    cmp     al, 0x00
+    je      .fn_done                        ; leave host bridge untouched
     cmp     al, 0x01
-    je      .setup_bridge_pm
+    je      .setup_isa_bridge
     cmp     al, 0x80
-    jne     .pm_done
+    je      .setup_pm_controller
+    jmp     .route_pci_irq
 
-.setup_bridge_pm:
-    ; PMBASE (reg 0x40): base 0x0600 | bit 0 (RTE/enable) = 0x0601
+.setup_isa_bridge:
+    ; Route PIRQ[A..D] -> IRQ [10, 10, 11, 11] on ISA/LPC bridge
+    mov     eax, esi
+    or      eax, 0x60
+    mov     ecx, 0x0B0B0A0A
+    call    pci_write_dword
+
+    ; Set ELCR level-triggered bits for IRQ 9, 10, 11 (port 0x4D1 bits 1..3)
+    mov     dx, 0x04D1
+    in      al, dx
+    or      al, 0x0E
+    out     dx, al
+
+    ; PCIe LPC bridges (DID >= 0x2900) also expose PIRQE..H and PMBASE
+    mov     eax, esi
+    call    pci_read_dword
+    shr     eax, 16
+    cmp     ax, 0x2900
+    jb      .fn_done
+
+    ; Route PIRQE..H (reg 0x68) on PCIe LPC bridge
+    mov     eax, esi
+    or      eax, 0x68
+    mov     ecx, 0x0B0B0A0A
+    call    pci_write_dword
+
+.setup_pm_controller:
+    ; Set ACPI PM I/O base = 0x0600 on power-management controller / LPC bridge
     mov     eax, esi
     or      eax, 0x40
     mov     ecx, 0x00000601
     call    pci_write_dword
 
-    ; Enable ACPI / PM I/O space on Bridge control registers (reg 0x44 bit 7, reg 0x80 bit 0)
     mov     eax, esi
     or      eax, 0x44
     call    pci_read_dword
@@ -144,303 +193,360 @@ pci_scan_devices:
     or      eax, 0x80
     call    pci_write_dword
 
-    ; Enable I/O Space in Command register (offset 0x04)
     mov     eax, esi
     or      eax, 0x04
     call    pci_read_dword
-    or      al, 0x01
+    or      al, 0x01                        ; enable PM I/O decode
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_write_dword
+    jmp     .route_pci_irq
+
+.not_bridge:
+    ; Only configure BARs on Header Type 0 endpoints
+    mov     eax, esi
+    or      eax, 0x0C
+    call    pci_read_dword
+    shr     eax, 16
+    and     al, 0x7F
+    jnz     .route_pci_irq
+
+    call    pci_allocate_endpoint_bars
+
+    ; Enable Bus Master, Memory, and I/O in Command (reg 0x04)
+    mov     eax, esi
+    or      eax, 0x04
+    call    pci_read_dword
+    or      al, 0x07
     mov     ecx, eax
     mov     eax, esi
     or      eax, 0x04
     call    pci_write_dword
 
-.pm_done:
-    ; Check for VGA Display Controller: Class 0x03
-    mov     eax, edi
-    shr     eax, 24                         ; AL = Class
-    cmp     al, PCI_CLASS_DISPLAY
-    jne     .check_storage
-
-    ; Display device found!
-    cmp     byte [es:SCRATCH_VGA_FOUND], 1
-    je      .check_storage                  ; Already recorded primary VGA
-
-    mov     byte [es:SCRATCH_VGA_FOUND], 1
-    mov     byte [es:SCRATCH_VGA_BUS], bh
-    mov     al, bl
-    shl     al, 3
-    or      al, cl
-    mov     byte [es:SCRATCH_VGA_DEVFN], al
-
-    ; Read BAR0 (reg 0x10): assign 0xE0000000 LFB base if MMIO BAR is unassigned
+.route_pci_irq:
+    ; Program Interrupt Line (0x3C) if Interrupt Pin (0x3D) is 1..4
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, 0x3C
     call    pci_read_dword
-    test    al, 0x01
-    jnz     .vga_rom_bar
-    and     eax, 0xFFFFFFF0
-    cmp     eax, 0x80000000
-    jae     .vga_rom_bar
-    mov     ecx, 0xE0000000
+    mov     ecx, eax
+    shr     ecx, 8
+    and     ecx, 0xFF                       ; 1=INTA..4=INTD
+    test    ecx, ecx
+    jz      .check_boot_roles
+    cmp     ecx, 4
+    ja      .check_boot_roles
+
+    ; Standard PCI swizzle: pirq = (slot + pin - 1) & 3
+    movzx   edx, bl
+    add     edx, ecx
+    dec     edx
+    and     edx, 3
+    movzx   edx, byte [cs:pci_pirq_irq_map + edx]
+    and     eax, 0xFFFFFF00
+    or      eax, edx
+    mov     ecx, eax
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, 0x3C
     call    pci_write_dword
 
-.vga_rom_bar:
-    ; Read Expansion ROM Base Address Register (reg 0x30)
+.check_boot_roles:
+    ; Record boot-relevant display, storage, and USB controllers
+    mov     eax, edi
+    shr     eax, 24                         ; class code
+    cmp     al, PCI_CLASS_DISPLAY
+    je      .record_vga
+    cmp     al, PCI_CLASS_STORAGE
+    je      .record_storage
+    cmp     al, PCI_CLASS_SERIAL
+    je      .record_usb
+    jmp     .fn_done
+
+.record_vga:
+    cmp     byte [es:SCRATCH_VGA_FOUND], 1
+    je      .fn_done
+    mov     byte [es:SCRATCH_VGA_FOUND], 1
+    mov     byte [es:SCRATCH_VGA_BUS], bh
+    mov     eax, esi
+    shr     eax, 8
+    mov     byte [es:SCRATCH_VGA_DEVFN], al
     mov     eax, esi
     or      eax, 0x30
     call    pci_read_dword
     mov     dword [es:SCRATCH_VGA_ROMBAR], eax
+    jmp     .fn_done
 
-.check_storage:
-    ; Check for Mass Storage (Class 0x01)
+.record_storage:
     mov     eax, edi
     shr     eax, 16
-    and     ax, 0xFFFF                      ; AH = Class, AL = Subclass
-    cmp     ah, PCI_CLASS_STORAGE
-    jne     .check_usb
-
+    and     al, 0xFF                        ; AL = Subclass
     cmp     al, PCI_SUBCLASS_AHCI
-    je      .found_ahci
-
-    ; Check for NVMe: Subclass 0x08 (Non-Volatile Memory)
+    je      .record_ahci
     cmp     al, 0x08
-    je      .found_nvme
-    jmp     .check_usb
+    je      .record_nvme
+    jmp     .fn_done
 
-.found_ahci:
+.record_ahci:
     cmp     byte [es:SCRATCH_AHCI_FOUND], 1
-    je      .check_usb
-
+    je      .fn_done
     mov     byte [es:SCRATCH_AHCI_FOUND], 1
     mov     byte [es:SCRATCH_AHCI_BUS], bh
-    mov     al, bl
-    shl     al, 3
-    or      al, cl
+    mov     eax, esi
+    shr     eax, 8
     mov     byte [es:SCRATCH_AHCI_DEVFN], al
-
-    ; Read BAR5 (ABAR at offset 0x24)
     mov     eax, esi
     or      eax, 0x24
     call    pci_read_dword
     and     eax, 0xFFFFFFF0
-    cmp     eax, 0x80000000
-    jae     .ahci_bar_ok
-
-    ; BAR5 unassigned — assign 0xFEB00000
-    mov     ecx, 0xFEB00000
-    mov     eax, esi
-    or      eax, 0x24
-    call    pci_write_dword
-    mov     eax, 0xFEB00000
-
-.ahci_bar_ok:
     mov     dword [es:SCRATCH_AHCI_BAR5], eax
+    jmp     .fn_done
 
-    ; Enable Bus Master (bit 2), Memory Space (bit 1), and I/O Space (bit 0)
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_read_dword
-    or      al, 0x07
-    mov     ecx, eax
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_write_dword
-    jmp     .check_usb
-
-.found_nvme:
+.record_nvme:
     cmp     byte [es:SCRATCH_NVME_FOUND], 1
-    je      .check_usb
-
+    je      .fn_done
     mov     byte [es:SCRATCH_NVME_FOUND], 1
     mov     byte [es:SCRATCH_NVME_BUS], bh
-    mov     al, bl
-    shl     al, 3
-    or      al, cl
+    mov     eax, esi
+    shr     eax, 8
     mov     byte [es:SCRATCH_NVME_DEVFN], al
-
-    ; Read 64-bit BAR0 at reg 0x10 and 0x14
     mov     eax, esi
     or      eax, 0x10
     call    pci_read_dword
     and     eax, 0xFFFFFFF0
-    cmp     eax, 0x80000000
-    jae     .nvme_bar_ok
-
-    ; Assign 0xFEB40000
-    mov     ecx, 0xFEB40000
-    mov     eax, esi
-    or      eax, 0x10
-    call    pci_write_dword
-    mov     eax, 0xFEB40000
-
-.nvme_bar_ok:
     mov     dword [es:SCRATCH_NVME_BAR0], eax
+    jmp     .fn_done
 
-    ; Clear high 32 bits of 64-bit BAR (reg 0x14)
-    mov     ecx, 0
-    mov     eax, esi
-    or      eax, 0x14
-    call    pci_write_dword
-
-    ; Enable Bus Master (bit 2) and Memory Space (bit 1)
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_read_dword
-    or      al, 0x06
-    mov     ecx, eax
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_write_dword
-
-.check_usb:
-    ; Check for Serial Bus (Class 0x0C) -> USB (SubClass 0x03)
+.record_usb:
     mov     eax, edi
     shr     eax, 16
-    and     ax, 0xFFFF                      ; AH = Class, AL = Subclass
-    cmp     ah, PCI_CLASS_SERIAL
-    jne     .check_network
-
+    and     al, 0xFF
     cmp     al, PCI_SUBCLASS_USB
-    jne     .fn_present
-
-    ; Check ProgIF: 0x20 = EHCI (USB 2.0), 0x30 = xHCI (USB 3.0)
+    jne     .fn_done
     mov     eax, edi
     shr     eax, 8
     and     al, 0xFF                        ; AL = ProgIF
-
     cmp     al, PCI_PROGIF_EHCI
-    jne     .try_xhci
-
-    ; Found EHCI controller!
-    cmp     byte [es:SCRATCH_USB_FOUND], 1
-    je      .fn_present
-
-    mov     byte [es:SCRATCH_USB_FOUND], 1
-    mov     byte [es:SCRATCH_USB_TYPE], 1   ; 1 = EHCI
-    mov     byte [es:SCRATCH_USB_BUS], bh
-    mov     al, bl
-    shl     al, 3
-    or      al, cl
-    mov     byte [es:SCRATCH_USB_DEVFN], al
-
-    ; Read BAR0 (reg 0x10)
-    mov     eax, esi
-    or      eax, 0x10
-    call    pci_read_dword
-    and     eax, 0xFFFFFFF0
-    cmp     eax, 0x80000000
-    jae     .usb_bar_ok
-
-    ; BAR0 unassigned — assign 0xFEB80000
-    mov     ecx, 0xFEB80000
-    mov     eax, esi
-    or      eax, 0x10
-    call    pci_write_dword
-    mov     eax, 0xFEB80000
-
-.usb_bar_ok:
-    mov     dword [es:SCRATCH_USB_BAR0], eax
-
-    ; Enable Bus Master (bit 2), Memory Space (bit 1), and I/O Space (bit 0)
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_read_dword
-    or      al, 0x07
-    mov     ecx, eax
-    mov     eax, esi
-    or      eax, 0x04
-    call    pci_write_dword
-    jmp     .fn_present
-
-.try_xhci:
+    je      .rec_ehci
     cmp     al, PCI_PROGIF_XHCI
-    jne     .fn_present
+    je      .rec_xhci
+    jmp     .fn_done
 
-    ; Found xHCI controller!
+.rec_ehci:
+    mov     dl, 1
+    jmp     .rec_usb_common
+.rec_xhci:
+    mov     dl, 2
+.rec_usb_common:
     cmp     byte [es:SCRATCH_USB_FOUND], 1
-    je      .fn_present
-
+    je      .fn_done
     mov     byte [es:SCRATCH_USB_FOUND], 1
-    mov     byte [es:SCRATCH_USB_TYPE], 2   ; 2 = xHCI
+    mov     byte [es:SCRATCH_USB_TYPE], dl
     mov     byte [es:SCRATCH_USB_BUS], bh
-    mov     al, bl
-    shl     al, 3
-    or      al, cl
+    mov     eax, esi
+    shr     eax, 8
     mov     byte [es:SCRATCH_USB_DEVFN], al
-
     mov     eax, esi
     or      eax, 0x10
     call    pci_read_dword
     and     eax, 0xFFFFFFF0
     mov     dword [es:SCRATCH_USB_BAR0], eax
 
-    ; Enable Bus Master + Memory Space
+.fn_done:
+    popad
+    ret
+
+; Size and assign unconfigured BAR0..BAR5 on a type-0 endpoint.
+; Input: ESI = PCI base addr, EDI = class dword, ES = 0x0000.
+; Disables I/O and MMIO decode while probing BAR masks, then restores Command.
+pci_allocate_endpoint_bars:
+    pushad
+
+    ; Disable I/O and Mem decode (bits 0..1) while probing BAR masks
     mov     eax, esi
     or      eax, 0x04
     call    pci_read_dword
-    or      al, 0x06
+    push    eax
     mov     ecx, eax
+    and     ecx, ~0x0003
     mov     eax, esi
     or      eax, 0x04
     call    pci_write_dword
-    jmp     .fn_present
 
-.check_network:
-    cmp     ah, 0x02                        ; Class 0x02 = Network Controller
-    jne     .fn_present
+    mov     ebx, 0x10                       ; BAR offset (0x10..0x24)
+.bar_loop:
+    cmp     ebx, 0x28
+    jae     .bars_done
 
-    ; Assign BAR0 if left unconfigured by reset (I/O -> 0xC000, MMIO -> 0xFEBA0000)
+    ; Skip legacy compatibility IDE BAR0..BAR3 (0x10..0x1C) on class 0x01/0x01
+    mov     eax, edi
+    shr     eax, 16
+    cmp     ax, 0x0101
+    jne     .probe_bar
+    cmp     ebx, 0x20
+    jae     .probe_bar
+    ; ProgIF bit 0 (primary) / bit 2 (secondary) == 0 means fixed legacy ports
+    mov     eax, edi
+    shr     eax, 8
+    test    al, 0x05
+    jnz     .probe_bar
+    add     ebx, 4
+    jmp     .bar_loop
+
+.probe_bar:
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, ebx
     call    pci_read_dword
-    test    al, 0x01
-    jz      .net_check_mmio
-    and     eax, 0xFFFFFFFC
-    cmp     eax, 0x0100
-    jae     .net_enable_cmd
-    mov     ecx, 0x0000C001
-    mov     eax, esi
-    or      eax, 0x10
-    call    pci_write_dword
-    jmp     .net_enable_cmd
+    mov     ebp, eax                        ; original BAR value
 
-.net_check_mmio:
-    and     eax, 0xFFFFFFF0
-    cmp     eax, 0x80000000
-    jae     .net_enable_cmd
     mov     ecx, 0xFFFFFFFF
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, ebx
     call    pci_write_dword
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, ebx
     call    pci_read_dword
-    and     eax, 0xFFFFFFF0
-    test    eax, eax
-    jz      .net_enable_cmd
-    mov     ecx, 0xFEBA0000
+    mov     edx, eax                        ; size mask
+    mov     ecx, ebp
     mov     eax, esi
-    or      eax, 0x10
+    or      eax, ebx
     call    pci_write_dword
 
-.net_enable_cmd:
+    test    edx, edx
+    jz      .next_bar
+    cmp     edx, 0xFFFFFFFF
+    je      .next_bar
+
+    test    ebp, 0x01
+    jnz     .handle_io_bar
+
+    ; MMIO BAR (32-bit or 64-bit)
+    mov     cl, 0
+    mov     eax, ebp
+    and     al, 0x06
+    cmp     al, 0x04
+    jne     .mmio_32_check
+    mov     cl, 1                           ; 64-bit BAR
+.mmio_32_check:
+    mov     eax, ebp
+    and     eax, 0xFFFFFFF0
+    cmp     eax, 0x80000000
+    jae     .mmio_advance                   ; already inside MMIO hole
+
+    and     edx, 0xFFFFFFF0
+    jz      .mmio_advance
+    not     edx
+    inc     edx                             ; MMIO BAR size in bytes
+
+    ; Place primary display BAR0 at 0xE0000000 LFB
+    mov     eax, edi
+    shr     eax, 24
+    cmp     al, PCI_CLASS_DISPLAY
+    jne     .alloc_mmio_cursor
+    cmp     ebx, 0x10
+    jne     .alloc_mmio_cursor
+    cmp     edx, 0x10000000
+    ja      .alloc_mmio_cursor
+    mov     ecx, 0xE0000000
     mov     eax, esi
-    or      eax, 0x04
-    call    pci_read_dword
-    or      al, 0x07
+    or      eax, ebx
+    call    pci_write_dword
+    jmp     .clear_hi64_check
+
+.alloc_mmio_cursor:
+    cmp     edx, 0x04000000                 ; cap single BAR at 64 MiB
+    ja      .mmio_advance
+    cmp     edx, 0x1000
+    jae     .mmio_align_ok
+    mov     edx, 0x1000
+.mmio_align_ok:
+    mov     eax, [es:SCRATCH_PCI_MMIO_NEXT]
+    push    edx
+    dec     edx
+    add     eax, edx
+    not     edx
+    and     eax, edx
+    pop     edx
+    mov     ecx, eax
+    add     ecx, edx
+    cmp     ecx, 0xFEBF0000                 ; keep below 0xFEC00000 IOAPIC/LAPIC
+    ja      .mmio_advance
+
+    mov     [es:SCRATCH_PCI_MMIO_NEXT], ecx
     mov     ecx, eax
     mov     eax, esi
+    or      eax, ebx
+    call    pci_write_dword
+
+.clear_hi64_check:
+    mov     eax, ebp
+    and     al, 0x06
+    cmp     al, 0x04
+    jne     .next_bar
+    add     ebx, 4
+    xor     ecx, ecx
+    mov     eax, esi
+    or      eax, ebx
+    call    pci_write_dword                 ; zero upper 32 bits of 64-bit BAR
+    jmp     .next_bar
+
+.mmio_advance:
+    test    cl, cl
+    jz      .next_bar
+    add     ebx, 4
+    jmp     .next_bar
+
+.handle_io_bar:
+    mov     eax, ebp
+    and     eax, 0x0000FFFC
+    cmp     eax, 0x0100
+    jae     .next_bar                       ; already allocated
+
+    and     edx, 0xFFFFFFFC
+    or      edx, 0xFFFF0000                 ; 16-bit I/O mask
+    not     edx
+    inc     edx                             ; I/O BAR size
+    test    edx, edx
+    jz      .next_bar
+    cmp     edx, 0x1000
+    ja      .next_bar
+
+    mov     ecx, edx
+    cmp     ecx, 0x0100
+    jae     .io_step_ok
+    mov     ecx, 0x0100
+.io_step_ok:
+    movzx   eax, word [es:SCRATCH_PCI_IO_NEXT]
+    push    ecx
+    dec     ecx
+    add     eax, ecx
+    not     ecx
+    and     eax, ecx
+    pop     ecx
+    mov     edx, eax
+    add     edx, ecx
+    cmp     edx, 0xF000
+    ja      .next_bar
+    mov     [es:SCRATCH_PCI_IO_NEXT], dx
+
+    or      eax, 0x01
+    mov     ecx, eax
+    mov     eax, esi
+    or      eax, ebx
+    call    pci_write_dword
+
+.next_bar:
+    add     ebx, 4
+    jmp     .bar_loop
+
+.bars_done:
+    pop     ecx                             ; restore Command dword
+    mov     eax, esi
     or      eax, 0x04
     call    pci_write_dword
 
-.fn_present:
     popad
-    clc
     ret
 
-.fn_absent:
-    popad
-    stc
-    ret
+; PIRQ[0..3] -> IRQ mapping
+pci_pirq_irq_map:
+    db 10, 10, 11, 11

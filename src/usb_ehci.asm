@@ -1,135 +1,116 @@
-; usb_ehci.asm — USB 2.0 EHCI Host Controller & Mass Storage (BOT) Driver
-; Discovers USB storage drives (flash drives), enumerates ports, and implements
-; SCSI READ(10) via Bulk-Only Transport (BOT) for INT 13h boot.
+; USB EHCI host controller and Bulk-Only Transport (BOT) SCSI READ(10) driver
 
 BITS 16
 
-; Memory Layout for EHCI USB Transfers (in safe low conventional memory)
-EHCI_QH_ADDR        equ 0x2000      ; Queue Head (64 bytes aligned)
-EHCI_QTD_ADDR       equ 0x2100      ; Queue Transfer Descriptor (32 bytes aligned)
-EHCI_CBW_ADDR       equ 0x2200      ; 31-byte Command Block Wrapper
-EHCI_CSW_ADDR       equ 0x2280      ; 13-byte Command Status Wrapper
-EHCI_SETUP_ADDR     equ 0x2300      ; 8-byte Setup Packet
+; EHCI DMA structures in low conventional memory
+EHCI_QH_ADDR        equ 0x2000      ; Queue Head (64 B aligned)
+EHCI_QTD_ADDR       equ 0x2100      ; Queue Transfer Descriptor (32 B aligned)
+EHCI_CBW_ADDR       equ 0x2200      ; 31 B Command Block Wrapper
+EHCI_CSW_ADDR       equ 0x2280      ; 13 B Command Status Wrapper
+EHCI_SETUP_ADDR     equ 0x2300      ; 8 B Setup packet
 
-; usb_init — Initialize USB EHCI Host Controller and detect USB Flash Drive
-; Returns: CF = 0 if USB flash drive detected, CF = 1 if none found
+; Probe EHCI ports, enumerate device, and issue TEST UNIT READY; returns CF=0 on success.
 usb_init:
     pushad
     push    es
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
+    mov     es, ax
 
-    ; Check if EHCI was discovered by PCI scan
     cmp     byte [es:SCRATCH_USB_FOUND], 1
     jne     .usb_fail
-    cmp     byte [es:SCRATCH_USB_TYPE], 1       ; 1 = EHCI
+    cmp     byte [es:SCRATCH_USB_TYPE], 1       ; EHCI
     je      .is_ehci
-    cmp     byte [es:SCRATCH_USB_TYPE], 2       ; 2 = xHCI
+    cmp     byte [es:SCRATCH_USB_TYPE], 2       ; xHCI
     jne     .usb_fail
     mov     si, msg_xhci_note
     call    fw_log
     jmp     .usb_fail
 
 .is_ehci:
-    mov     esi, [es:SCRATCH_USB_BAR0]      ; ESI = EHCI Base Address
+    mov     esi, [es:SCRATCH_USB_BAR0]
     test    esi, esi
     jz      .usb_fail
 
-    ; Enable 4GB access via FS
     call    enable_unreal_mode
 
-    ; Read CAPLENGTH (offset 0x00, 1 byte)
-    ; Operational Registers Base = BAR0 + CAPLENGTH
+    ; Operational registers = BAR0 + CAPLENGTH (+0x00)
     a32 movzx ebp, byte [fs:esi + 0x00]
-    add     ebp, esi                        ; EBP = OpRegs Base
-    mov     [es:SCRATCH_USB_BAR0 + 4], ebp  ; Save OpRegs Base in Scratch RAM
+    add     ebp, esi
+    mov     [es:SCRATCH_USB_BAR0 + 4], ebp
 
-    ; Route all ports to EHCI: write 1 to CONFIGFLAG (OpRegs + 0x40)
+    ; Route ports to EHCI (CONFIGFLAG +0x40 = 1) and zero 64-bit segment (+0x10)
     a32 mov dword [fs:ebp + 0x40], 0x00000001
-
-    ; Clear 64-bit segment (CTRLDSSEGMENT at OpRegs + 0x10)
     a32 mov dword [fs:ebp + 0x10], 0x00000000
 
-    ; Read N_PORTS from HCSPARAMS (BAR0 + 0x04, bits 3:0)
+    ; N_PORTS from HCSPARAMS (+0x04 bits 3:0)
     a32 mov eax, [fs:esi + 0x04]
-    and     eax, 0x0F                       ; AL = number of ports (usually 2..8)
+    and     eax, 0x0F
     mov     ecx, eax
     test    ecx, ecx
     jz      .usb_fail
 
-    ; Scan ports for connected device: PORTSC registers start at OpRegs + 0x44
-    xor     ebx, ebx                        ; Port index 0..N-1
+    xor     ebx, ebx
 .port_scan:
     mov     edi, ebx
-    shl     edi, 2                          ; port * 4
+    shl     edi, 2
     add     edi, ebp
-    add     edi, 0x44                       ; EDI = PORTSC address
+    add     edi, 0x44                       ; PORTSC[port]
 
-    ; Read PORTSC: check bit 0 (Current Connect Status)
     a32 mov eax, [fs:edi]
-    test    al, 0x01
+    test    al, 0x01                        ; Current Connect Status
     jnz     .port_found
 
     inc     ebx
     cmp     ebx, ecx
     jb      .port_scan
 
-    ; No USB drive plugged in
     jmp     .usb_fail
 
 .port_found:
-    ; USB device found on port EBX!
-    ; Reset the port: set bit 8 (Port Reset) in PORTSC
-    ; Write-1-to-clear status bits (bits 1, 3) must be preserved as 0
+    ; Assert Port Reset (bit 8) while leaving W1C status bits (bits 1, 3, 5) clear
     a32 mov eax, [fs:edi]
-    and     eax, ~0x002A                    ; Preserve R/W bits, clear status change bits
-    or      eax, 0x00000100                 ; Set Port Reset (bit 8)
+    and     eax, ~0x002A
+    or      eax, 0x00000100
     a32 mov [fs:edi], eax
 
-    ; Wait ~50ms for USB port reset pulse (using PIT counter or loop delay)
+    ; ~50 ms reset pulse
     mov     edx, 0x00020000
 .wait_reset:
     dec     edx
     jnz     .wait_reset
 
-    ; Clear Port Reset bit (bit 8 = 0)
     a32 mov eax, [fs:edi]
-    and     eax, ~0x0000012A                ; Clear bit 8
+    and     eax, ~0x0000012A                ; clear Port Reset + W1C bits
     a32 mov [fs:edi], eax
 
-    ; Wait ~10ms for port recovery and check Port Enable (bit 2)
+    ; ~10 ms recovery; check Port Enable (bit 2)
     mov     edx, 0x0000FFFF
 .wait_enable:
     a32 mov eax, [fs:edi]
-    test    al, 0x04                        ; Port Enabled?
+    test    al, 0x04
     jnz     .port_ready
     dec     edx
     jnz     .wait_enable
 
-    ; Port didn't enable (likely Low/Full speed device handed off to companion controller)
+    ; Port did not enable (likely low/full-speed device for companion controller)
     jmp     .usb_fail
 
 .port_ready:
-    ; Start EHCI: set Run/Stop (bit 0) in USBCMD (OpRegs + 0x00)
+    ; Start controller (USBCMD Run/Stop bit 0)
     a32 mov eax, [fs:ebp + 0x00]
-    or      eax, 0x00000001                 ; Run/Stop = 1
+    or      eax, 0x00000001
     a32 mov [fs:ebp + 0x00], eax
 
-    ; Save active port PORTSC address for transfer operations
     mov     [es:SCRATCH_USB_BAR0 + 8], edi
 
-    ; Initialize USB device address, Bulk endpoints, and Data Toggles in Scratch RAM
     mov     byte [es:SCRATCH_USB_ADDR], 0
     mov     byte [es:SCRATCH_USB_TOGGLE_IN], 0
     mov     byte [es:SCRATCH_USB_TOGGLE_OUT], 0
     mov     byte [es:SCRATCH_USB_EP_IN], 1
     mov     byte [es:SCRATCH_USB_EP_OUT], 2
 
-    ; Enumerate USB device: SET_ADDRESS(1), discover Bulk EPs, SET_CONFIGURATION(1)
     call    usb_set_configuration_1
-
-    ; Test Unit Ready to clear SCSI Unit Attention (Power-on/Reset condition)
     call    usb_test_unit_ready
 
     pop     es
@@ -143,57 +124,48 @@ usb_init:
     stc
     ret
 
-; usb_test_unit_ready — Send SCSI TEST UNIT READY (Opcode 0x00)
-; Loops up to 5 times to allow drive to clear Unit Attention / spin up
+; Send SCSI TEST UNIT READY (0x00) up to 5 times to clear Unit Attention
 usb_test_unit_ready:
     pushad
     push    es
     xor     ax, ax
     mov     es, ax
 
-    mov     di, 5                           ; Up to 5 attempts
+    mov     di, 5
 .tur_loop:
     mov     esi, EHCI_CBW_ADDR
-    ; Dword 0: "USBC"
-    a32 mov dword [fs:esi + 0x00], 0x43425355
-    ; Dword 1: Tag
-    a32 mov dword [fs:esi + 0x04], 0x00000002
-    ; Dword 2: Data Transfer Length = 0
-    a32 mov dword [fs:esi + 0x08], 0x00000000
-    ; Byte 12: Flags = 0 (No data)
-    a32 mov byte [fs:esi + 0x0C], 0x00
-    ; Byte 13: LUN = 0
-    a32 mov byte [fs:esi + 0x0D], 0x00
-    ; Byte 14: Command Length = 6
-    a32 mov byte [fs:esi + 0x0E], 0x06
+    a32 mov dword [fs:esi + 0x00], 0x43425355 ; 'USBC'
+    a32 mov dword [fs:esi + 0x04], 0x00000002 ; tag
+    a32 mov dword [fs:esi + 0x08], 0x00000000 ; transfer len
+    a32 mov byte [fs:esi + 0x0C], 0x00        ; flags (none)
+    a32 mov byte [fs:esi + 0x0D], 0x00        ; LUN
+    a32 mov byte [fs:esi + 0x0E], 0x06        ; CDB len
 
-    ; CDB: TEST UNIT READY (6 bytes of 0x00)
-    a32 mov dword [fs:esi + 0x0F], 0x00000000
+    a32 mov dword [fs:esi + 0x0F], 0x00000000 ; TEST UNIT READY (6 B)
     a32 mov word  [fs:esi + 0x13], 0x0000
 
-    ; Step 1: Send CBW (31 bytes, Bulk OUT EP)
-    mov     al, 0                           ; PID = 0 (OUT)
+    ; Send 31 B CBW
+    mov     al, 0
     mov     cx, 31
     mov     edx, EHCI_CBW_ADDR
     mov     bl, [es:SCRATCH_USB_EP_OUT]
     call    ehci_exec_transfer
     jc      .tur_retry
 
-    ; Step 2: Receive CSW (13 bytes, Bulk IN EP)
-    mov     al, 1                           ; PID = 1 (IN)
+    ; Read 13 B CSW
+    mov     al, 1
     mov     cx, 13
     mov     edx, EHCI_CSW_ADDR
     mov     bl, [es:SCRATCH_USB_EP_IN]
     call    ehci_exec_transfer
     jc      .tur_retry
 
-    ; Check CSW status at offset +12: 0 = Passed
-    a32 mov al, byte [fs:EHCI_CSW_ADDR + 12]
+    a32 mov al, byte [fs:EHCI_CSW_ADDR + 12]  ; 0 = passed
     test    al, al
     jz      .tur_done
 
 .tur_retry:
-    ; Delay ~10ms between attempts
+    ; ~10 ms retry delay
     mov     ecx, 0x0000FFFF
 .tur_delay:
     dec     ecx
@@ -207,128 +179,105 @@ usb_test_unit_ready:
     popad
     ret
 
-; usb_read_sectors — Read sectors from USB flash drive via SCSI READ(10)
-; Inputs:
-;   EBX = Starting LBA
-;   CX  = Sector count (1..128)
-;   ES:DI = Target buffer address
-; Output:
-;   CF = 0 on success, CF = 1 on error (AH = status code)
+; Read sectors using SCSI READ(10) over BOT.
+; Inputs: EBX=LBA, CX=count (1..128), ES:DI=dst buffer.
+; Output: CF=0 on success, CF=1 with AH=status on error.
 usb_read_sectors:
     pushad
     push    ds
     push    es
 
-    ; Ensure 4GB Unreal Mode limit on FS
     call    enable_unreal_mode
 
-    ; Calculate physical destination address: (ES << 4) + DI
     mov     ax, es
     movzx   eax, ax
     shl     eax, 4
     movzx   edx, di
     add     eax, edx
-    mov     ebp, eax                        ; EBP = 32-bit physical destination buffer
+    mov     ebp, eax                        ; physical dst buffer
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
+    mov     es, ax
 
-    ; Retry loop counter on stack (or BP)
-    push    word 3                          ; 3 attempts
+    push    word 3                          ; retry limit
 .retry_read_loop:
     mov     esi, EHCI_CBW_ADDR
 
-    ; Construct 31-byte Command Block Wrapper (CBW)
-    ; Dword 0: Signature "USBC" = 0x43425355
-    a32 mov dword [fs:esi + 0x00], 0x43425355
-    ; Dword 1: Tag = 0x00000001
+    ; 31 B CBW
+    a32 mov dword [fs:esi + 0x00], 0x43425355 ; 'USBC'
     a32 mov dword [fs:esi + 0x04], 0x00000001
-    ; Dword 2: Data Transfer Length = sectors * 512 bytes
     movzx   eax, cx
-    shl     eax, 9                          ; sectors * 512
+    shl     eax, 9                          ; sectors * 512 B
     a32 mov [fs:esi + 0x08], eax
-    ; Byte 12: Flags = 0x80 (Data-In: device to host)
-    a32 mov byte [fs:esi + 0x0C], 0x80
-    ; Byte 13: LUN = 0
+    a32 mov byte [fs:esi + 0x0C], 0x80      ; Data-In
     a32 mov byte [fs:esi + 0x0D], 0x00
-    ; Byte 14: Command Length = 10 bytes (SCSI READ(10))
-    a32 mov byte [fs:esi + 0x0E], 10
+    a32 mov byte [fs:esi + 0x0E], 10        ; SCSI READ(10) len
 
-    ; SCSI READ(10) Command Block (10 bytes at offset +0x0F)
-    ; Opcode 0x28 = READ(10)
-    a32 mov byte [fs:esi + 0x0F], 0x28
-    a32 mov byte [fs:esi + 0x10], 0x00      ; Flags
+    a32 mov byte [fs:esi + 0x0F], 0x28      ; READ(10)
+    a32 mov byte [fs:esi + 0x10], 0x00
 
-    ; 32-bit LBA in Big-Endian:
-    bswap   ebx                             ; Convert EBX to Big-Endian
-    a32 mov [fs:esi + 0x11], ebx            ; LBA (bytes 2..5)
-    bswap   ebx                             ; Restore original EBX
+    ; Big-endian 32-bit LBA
+    bswap   ebx
+    a32 mov [fs:esi + 0x11], ebx
+    bswap   ebx
 
-    a32 mov byte [fs:esi + 0x15], 0x00      ; Reserved
+    a32 mov byte [fs:esi + 0x15], 0x00
 
-    ; 16-bit Transfer Length in Big-Endian (sectors):
-    mov     al, ch                          ; High byte
-    mov     ah, cl                          ; Low byte
-    a32 mov [fs:esi + 0x16], ax             ; Count (bytes 7..8)
-    a32 mov byte [fs:esi + 0x18], 0x00      ; Control
+    ; Big-endian 16-bit sector count
+    mov     al, ch
+    mov     ah, cl
+    a32 mov [fs:esi + 0x16], ax
+    a32 mov byte [fs:esi + 0x18], 0x00
 
-    ; Execute Async Transfers for BOT (Bulk-Only Transport)
-    ;    Step A: Send 31-byte CBW on Bulk-OUT Endpoint
-    ;    Step B: Receive Sector Data on Bulk-IN Endpoint to EBP
-    ;    Step C: Receive 13-byte CSW on Bulk-IN Endpoint
-    ; Step A: Send CBW
-    mov     al, 0                           ; PID = 0 (OUT)
+    ; BOT CBW (OUT) -> Data (IN) -> CSW (IN)
+    mov     al, 0
     push    cx
-    mov     cx, 31                          ; Length = 31 bytes
-    mov     edx, EHCI_CBW_ADDR              ; Source buffer
+    mov     cx, 31
+    mov     edx, EHCI_CBW_ADDR
     mov     bl, [es:SCRATCH_USB_EP_OUT]
     call    ehci_exec_transfer
     pop     cx
     jc      .read_failed_try
 
-    ; Step B: Receive Data
     push    cx
     movzx   eax, cx
-    shl     eax, 9                          ; Sector count * 512
+    shl     eax, 9
     mov     cx, ax
-    mov     al, 1                           ; PID = 1 (IN)
-    mov     edx, ebp                        ; Target buffer
+    mov     al, 1
+    mov     edx, ebp
     mov     bl, [es:SCRATCH_USB_EP_IN]
     call    ehci_exec_transfer
     pop     cx
     jc      .read_failed_try
 
-    ; Step C: Receive CSW
-    mov     al, 1                           ; PID = 1 (IN)
+    mov     al, 1
     push    cx
-    mov     cx, 13                          ; Length = 13 bytes
+    mov     cx, 13
     mov     edx, EHCI_CSW_ADDR
     mov     bl, [es:SCRATCH_USB_EP_IN]
     call    ehci_exec_transfer
     pop     cx
     jc      .read_failed_try
 
-    ; Check CSW status at offset +12: 0 = Passed
-    a32 mov al, byte [fs:EHCI_CSW_ADDR + 12]
+    a32 mov al, byte [fs:EHCI_CSW_ADDR + 12]  ; 0 = passed
     test    al, al
-    jz      .read_success                   ; Succeeded!
+    jz      .read_success
 
 .read_failed_try:
     mov     bp, sp
-    dec     word [bp]                       ; Decrement attempt count
+    dec     word [bp]
     jnz     .retry_read_loop
 
-    ; All retries exhausted
-    add     sp, 2                           ; Clean stack
+    add     sp, 2
     pop     es
     pop     ds
     popad
-    mov     ah, 0x04                        ; Sector read error
+    mov     ah, 0x04
     stc
     ret
 
 .read_success:
-    add     sp, 2                           ; Clean stack
+    add     sp, 2
     pop     es
     pop     ds
     popad
@@ -336,42 +285,34 @@ usb_read_sectors:
     clc
     ret
 
-; ehci_exec_transfer — Execute a single QH/qTD transaction on EHCI
-; Inputs:
-;   AL = PID (0=OUT, 1=IN, 2=SETUP)
-;   CX = Transfer length (bytes)
-;   EDX = Physical buffer pointer
-;   BL = Endpoint number
-; Returns: CF = 0 on success, CF = 1 on timeout/error
+; Execute single QH/qTD transfer.
+; Inputs: AL=PID (0=OUT, 1=IN, 2=SETUP), CX=bytes, EDX=phys buf, BL=endpoint.
 ehci_exec_transfer:
     pushad
     push    es
 
     xor     di, di
-    mov     es, di                          ; ES = 0x0000 (Scratch RAM)
-    mov     bh, al                          ; Save PID in BH
+    mov     es, di
+    mov     bh, al
 
-    ; Construct qTD at EHCI_QTD_ADDR
     mov     esi, EHCI_QTD_ADDR
-    a32 mov dword [fs:esi + 0x00], 0x00000001 ; Next qTD = Terminate
-    a32 mov dword [fs:esi + 0x04], 0x00000001 ; Alt qTD = Terminate
+    a32 mov dword [fs:esi + 0x00], 0x00000001 ; next qTD = terminate
+    a32 mov dword [fs:esi + 0x04], 0x00000001 ; alt qTD = terminate
 
-    ; Build Token: Status(Active=0x80) | PID(AL << 8) | Cerr(3 << 10) | TotalBytes(CX << 16) | IOC(1 << 15)
+    ; Token: Active(0x80) | PID[9:8] | Cerr=3[11:10] | IOC(bit 15) | TotalBytes[30:16]
     movzx   eax, al
-    shl     eax, 8                          ; PID in bits [9:8]
-    or      eax, 0x00008C80                 ; Active (bit 7) + Cerr=3 (bits 11:10) + IOC (bit 15)
+    shl     eax, 8
+    or      eax, 0x00008C80
     movzx   edi, cx
-    shl     edi, 16                         ; Total bytes in bits [30:16]
+    shl     edi, 16
     or      eax, edi
 
-    ; Set Data Toggle (bit 31) in qTD Token:
-    ; - On Control EP0: SETUP (PID=2) uses DATA0 (bit 31=0); DATA/STATUS uses DATA1 (bit 31=1)
-    ; - On Bulk EPs: use persistent toggle from SCRATCH_USB_TOGGLE_IN / SCRATCH_USB_TOGGLE_OUT
+    ; Data toggle (bit 31): EP0 SETUP=DATA0, DATA/STATUS=DATA1; bulk uses saved toggle
     test    bl, bl
     jnz     .toggle_bulk
     cmp     bh, 2
-    je      .toggle_ready                   ; SETUP -> DATA0
-    or      eax, 0x80000000                 ; Control DATA/STATUS -> DATA1
+    je      .toggle_ready
+    or      eax, 0x80000000
     jmp     .toggle_ready
 .toggle_bulk:
     cmp     bh, 1
@@ -385,9 +326,9 @@ ehci_exec_transfer:
     je      .toggle_ready
     or      eax, 0x80000000
 .toggle_ready:
-    a32 mov [fs:esi + 0x08], eax            ; Store Token
+    a32 mov [fs:esi + 0x08], eax
 
-    ; Buffer Pointer 0 (offset +0x0C) and Page 1 (offset +0x10) for 4KB page crossings
+    ; Page 0 and next 4 KiB page 1 for page-crossing transfers
     a32 mov [fs:esi + 0x0C], edx
     mov     eax, edx
     add     eax, 0x1000
@@ -397,70 +338,57 @@ ehci_exec_transfer:
     a32 mov dword [fs:esi + 0x18], 0
     a32 mov dword [fs:esi + 0x1C], 0
 
-    ; Construct Queue Head at EHCI_QH_ADDR
     mov     esi, EHCI_QH_ADDR
-    ; Dword 0: Horiz Pointer -> points to itself with Type = QH (bit 1 = 1)
-    a32 mov dword [fs:esi + 0x00], (EHCI_QH_ADDR | 0x02)
+    a32 mov dword [fs:esi + 0x00], (EHCI_QH_ADDR | 0x02) ; self-loop, type=QH
 
-    ; Dword 1: Endpoint Char: DevAddr | EpNum(BL << 8) | EPS(2 << 12) | DTC(1 << 14) | H(1 << 15) | MaxPacket
+    ; Endpoint capabilities: DevAddr | EpNum | EPS=HS(2) | DTC=1 | H=1 | MaxPacket
     movzx   eax, bl
-    shl     eax, 8                          ; Endpoint number
-    or      al, [es:SCRATCH_USB_ADDR]       ; Device Address (bits 6:0)
+    shl     eax, 8
+    or      al, [es:SCRATCH_USB_ADDR]
     test    bl, bl
     jnz     .bulk_char
-    ; Control EP 0: MaxPacket = 64 (0x0040), DTC = 1 (bit 14), H-flag = 1 (bit 15)
-    or      eax, 0x0040E000
+    or      eax, 0x0040E000                 ; EP0 MaxPacket=64
     jmp     .store_ep_char
 .bulk_char:
-    ; Bulk EP: MaxPacket = 512 (0x0200), DTC = 1 (bit 14), H-flag = 1 (bit 15)
-    or      eax, 0x0200E000
+    or      eax, 0x0200E000                 ; Bulk MaxPacket=512
 .store_ep_char:
     a32 mov [fs:esi + 0x04], eax
 
-    ; Dword 2: Endpoint Caps: High-Bandwidth Mult = 1 (1 << 30)
-    a32 mov dword [fs:esi + 0x08], 0x40000000
-
-    ; Dword 3: Current qTD = 0
+    a32 mov dword [fs:esi + 0x08], 0x40000000 ; Mult=1
     a32 mov dword [fs:esi + 0x0C], 0
-
-    ; Dword 4: Overlay Next qTD = EHCI_QTD_ADDR
     a32 mov dword [fs:esi + 0x10], EHCI_QTD_ADDR
-    a32 mov dword [fs:esi + 0x14], 0x00000001 ; Alt qTD = Terminate
-    a32 mov dword [fs:esi + 0x18], 0          ; Overlay Token = 0
+    a32 mov dword [fs:esi + 0x14], 0x00000001
+    a32 mov dword [fs:esi + 0x18], 0
 
-    ; Program ASYNCLISTADDR and Start Async Schedule
-    mov     ebp, [es:SCRATCH_USB_BAR0 + 4]  ; EBP = OpRegs Base
-    a32 mov dword [fs:ebp + 0x18], EHCI_QH_ADDR
+    mov     ebp, [es:SCRATCH_USB_BAR0 + 4]
+    a32 mov dword [fs:ebp + 0x18], EHCI_QH_ADDR ; ASYNCLISTADDR
 
-    ; Set ASE (bit 5) in USBCMD (OpRegs + 0x00)
     a32 mov eax, [fs:ebp + 0x00]
-    or      eax, 0x00000020                 ; Async Schedule Enable
+    or      eax, 0x00000020                 ; Async Schedule Enable (ASE)
     a32 mov [fs:ebp + 0x00], eax
 
-    ; Poll qTD Token for completion (bit 7 = Active)
     mov     ecx, 0x000FFFFF
 .poll_qtd:
     mov     esi, EHCI_QTD_ADDR
     a32 mov eax, [fs:esi + 0x08]
-    test    al, 0x80                        ; Active bit still 1?
+    test    al, 0x80                        ; Active
     jz      .qtd_done
     dec     ecx
     jnz     .poll_qtd
 
-    ; Timeout! Stop schedule and exit
     jmp     .qtd_err
 
 .qtd_done:
-    ; Check qTD error bits (Halted=0x40, DataBuf=0x20, Babble=0x10, XactErr=0x08)
+    ; Halted=0x40, DataBuf=0x20, Babble=0x10, XactErr=0x08
     test    al, 0x78
     jnz     .qtd_err
 
-    ; Stop Async Schedule: clear ASE (bit 5)
+    ; Clear ASE
     a32 mov eax, [fs:ebp + 0x00]
     and     eax, ~0x00000020
     a32 mov [fs:ebp + 0x00], eax
 
-    ; Update persistent Bulk Data Toggle from QH Overlay Token (bit 31)
+    ; Save updated bulk data toggle from QH overlay token bit 31
     test    bl, bl
     jz      .skip_toggle_save
     mov     esi, EHCI_QH_ADDR
@@ -479,7 +407,6 @@ ehci_exec_transfer:
     ret
 
 .qtd_err:
-    ; Stop Async Schedule on error
     a32 mov eax, [fs:ebp + 0x00]
     and     eax, ~0x00000020
     a32 mov [fs:ebp + 0x00], eax
@@ -489,45 +416,17 @@ ehci_exec_transfer:
     stc
     ret
 
-; usb_set_configuration_1 — Enumerate device: SET_ADDRESS(1), parse endpoints,
-;                           and send SET_CONFIGURATION(1) to EP0
+; Assign address 1, parse Bulk IN/OUT endpoints from config descriptor, and set config 1.
 usb_set_configuration_1:
     pushad
     push    es
     xor     ax, ax
     mov     es, ax
 
-    ; --- Step 1: Send SET_ADDRESS(1) to Default Address 0, EP 0 ---
+    ; SET_ADDRESS(1) on addr 0 / EP0
     mov     esi, EHCI_SETUP_ADDR
-    ; bmRequestType=0x00, bRequest=0x05 (SET_ADDRESS), wValue=1, wIndex=0, wLength=0
     a32 mov dword [fs:esi + 0x00], 0x00010500
     a32 mov dword [fs:esi + 0x04], 0x00000000
-
-    mov     al, 2                           ; PID = 2 (SETUP)
-    mov     cx, 8
-    mov     edx, EHCI_SETUP_ADDR
-    xor     bl, bl                          ; Control EP 0
-    call    ehci_exec_transfer
-    jc      .set_config_only
-
-    mov     al, 1                           ; PID = 1 (Status IN)
-    xor     cx, cx
-    mov     edx, EHCI_SETUP_ADDR
-    xor     bl, bl
-    call    ehci_exec_transfer
-    jc      .set_config_only
-
-    ; Address 1 is now latched by the device! Wait ~2ms recovery and set SCRATCH_USB_ADDR = 1
-    mov     ecx, 0x00004000
-.addr_delay:
-    dec     ecx
-    jnz     .addr_delay
-    mov     byte [es:SCRATCH_USB_ADDR], 1
-
-    ; --- Step 2: Read Configuration Descriptor (32 bytes) to discover Bulk EPs ---
-    ; bmRequestType=0x80, bRequest=0x06 (GET_DESCRIPTOR), wValue=0x0200 (Config 0), wIndex=0, wLength=32
-    a32 mov dword [fs:esi + 0x00], 0x02000680
-    a32 mov dword [fs:esi + 0x04], 0x00200000
 
     mov     al, 2                           ; SETUP
     mov     cx, 8
@@ -536,35 +435,60 @@ usb_set_configuration_1:
     call    ehci_exec_transfer
     jc      .set_config_only
 
-    mov     al, 1                           ; DATA IN (32 bytes into EHCI_CSW_ADDR)
+    mov     al, 1                           ; Status IN
+    xor     cx, cx
+    mov     edx, EHCI_SETUP_ADDR
+    xor     bl, bl
+    call    ehci_exec_transfer
+    jc      .set_config_only
+
+    ; ~2 ms SetAddress recovery
+    mov     ecx, 0x00004000
+.addr_delay:
+    dec     ecx
+    jnz     .addr_delay
+    mov     byte [es:SCRATCH_USB_ADDR], 1
+
+    ; GET_DESCRIPTOR(Configuration, 32 B) to discover bulk endpoints
+    a32 mov dword [fs:esi + 0x00], 0x02000680
+    a32 mov dword [fs:esi + 0x04], 0x00200000
+
+    mov     al, 2
+    mov     cx, 8
+    mov     edx, EHCI_SETUP_ADDR
+    xor     bl, bl
+    call    ehci_exec_transfer
+    jc      .set_config_only
+
+    mov     al, 1
     mov     cx, 32
     mov     edx, EHCI_CSW_ADDR
     xor     bl, bl
     call    ehci_exec_transfer
     jc      .set_config_only
 
-    mov     al, 0                           ; STATUS OUT (0 bytes)
+    mov     al, 0
     xor     cx, cx
     mov     edx, EHCI_CSW_ADDR
     xor     bl, bl
     call    ehci_exec_transfer
 
-    ; Parse Endpoint Descriptors (bDescriptorType == 0x05, bmAttributes == 0x02 Bulk)
+    ; Walk descriptor bytes for Bulk Endpoint descriptors (type=0x05, attr&3=0x02)
     mov     edi, EHCI_CSW_ADDR
     mov     cx, 26
 .parse_desc:
     a32 mov al, [fs:edi + 1]                ; bDescriptorType
-    cmp     al, 0x05                        ; Endpoint descriptor?
+    cmp     al, 0x05
     jne     .next_desc_byte
     a32 mov al, [fs:edi + 3]                ; bmAttributes
     and     al, 0x03
-    cmp     al, 0x02                        ; Bulk transfer type?
+    cmp     al, 0x02
     jne     .next_desc_byte
     a32 mov al, [fs:edi + 2]                ; bEndpointAddress
     mov     ah, al
-    and     ah, 0x0F                        ; Endpoint number (1..15)
+    and     ah, 0x0F
     jz      .next_desc_byte
-    test    al, 0x80                        ; Bit 7: 1 = IN, 0 = OUT
+    test    al, 0x80                        ; bit 7: 1=IN, 0=OUT
     jz      .found_ep_out
     mov     [es:SCRATCH_USB_EP_IN], ah
     jmp     .next_desc_byte
@@ -575,27 +499,24 @@ usb_set_configuration_1:
     loop    .parse_desc
 
 .set_config_only:
-    ; --- Step 3: Send SET_CONFIGURATION(1) to EP0 ---
+    ; SET_CONFIGURATION(1)
     mov     esi, EHCI_SETUP_ADDR
-    ; Setup packet: bmRequestType=0x00, bRequest=0x09 (SET_CONFIG), wValue=1, wIndex=0, wLength=0
     a32 mov dword [fs:esi + 0x00], 0x00010900
     a32 mov dword [fs:esi + 0x04], 0x00000000
 
-    ; Send SETUP packet (PID = 2, Length = 8, Endpoint = 0)
-    mov     al, 2                           ; PID = 2 (SETUP)
+    mov     al, 2
     mov     cx, 8
     mov     edx, EHCI_SETUP_ADDR
-    xor     bl, bl                          ; Control EP 0
+    xor     bl, bl
     call    ehci_exec_transfer
 
-    ; Status IN stage (PID = 1, Length = 0, Endpoint = 0)
-    mov     al, 1                           ; PID = 1 (IN)
-    xor     cx, cx                          ; 0 bytes
+    mov     al, 1
+    xor     cx, cx
     mov     edx, EHCI_SETUP_ADDR
-    xor     bl, bl                          ; Control EP 0
+    xor     bl, bl
     call    ehci_exec_transfer
 
-    ; Reset Bulk Data Toggles to DATA0 (0) after SET_CONFIGURATION
+    ; Reset bulk toggles to DATA0 after SET_CONFIGURATION
     mov     byte [es:SCRATCH_USB_TOGGLE_IN], 0
     mov     byte [es:SCRATCH_USB_TOGGLE_OUT], 0
 

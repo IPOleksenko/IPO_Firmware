@@ -1,6 +1,4 @@
-; int13.asm — Disk Services (INT 13h) implementation
-; Features: AH=00h (Reset), AH=41h (Extensions Check), AH=42h (DAP Extended Read)
-; Supports ATA/IDE PIO Mode for Drive 0x80 (Master) and 0x81 (Slave)
+; INT 13h disk services (ATA PIO, SATA AHCI, NVMe, USB BOT)
 
 BITS 16
 
@@ -17,29 +15,24 @@ int13h_handler:
     cmp     ah, 0x08
     je      .fn_get_drive_params
 
-    ; Unsupported function
-    mov     ah, 0x01                        ; AH = 0x01 (Invalid function)
+    mov     ah, 0x01                        ; invalid function
     stc
     jmp     .exit
 
-; AH = 0x00 — Reset Disk System
+; AH=00h: reset disk
 .fn_reset:
     xor     ah, ah
     clc
     jmp     .exit
 
-; AH = 0x41 — Installation Check (Extensions check)
-; Input: AH = 0x41, BX = 0x55AA, DL = Drive (0x80..0xFF)
-; Output:
-;   CF = 0 (Supported), BX = 0xAA55, AH = 0x21 (v1.x), CX = 0x0001 (DAP supported)
+; AH=41h: extensions check (BX=0x55AA -> BX=0xAA55, CX=1 DAP)
 .fn_extensions_check:
     cmp     bx, 0x55AA
     jne     .ext_fail
 
-    mov     bx, 0xAA55                      ; Extension signature
-    mov     ah, 0x21                        ; Version 2.1
-    mov     al, 0x00
-    mov     cx, 0x0001                      ; Subset 1: Extended disk access (42h-44h, 47h, 48h)
+    mov     bx, 0xAA55
+    xor     ax, ax
+    mov     cx, 0x0001                      ; extended disk access subset
     clc
     jmp     .exit
 
@@ -47,36 +40,27 @@ int13h_handler:
     stc
     jmp     .exit
 
-; AH = 0x08 — Get Drive Parameters
+; AH=08h: get drive geometry
 .fn_get_drive_params:
     push    ds
     xor     ax, ax
     mov     ds, ax
-    mov     dl, [ds:0x0475]                 ; Number of drives attached (from BDA)
+    mov     dl, [ds:0x0475]                 ; BDA disk count
     pop     ds
     test    dl, dl
     jnz     .drives_ok
     mov     dl, 1
 .drives_ok:
-    xor     ah, ah                          ; Status = 0 (Success)
-    mov     ch, 0xFF                        ; Cylinders low (1023 max)
-    mov     cl, 0xFF                        ; Sectors 1..63 (0x3F) | Cyl bits 8-9 (0xC0)
-    mov     dh, 15                          ; Max head (16 heads: 0..15)
+    xor     ah, ah
+    mov     ch, 0xFF                        ; max cyl low (1023)
+    mov     cl, 0xFF                        ; 63 sectors | cyl[9:8]
+    mov     dh, 15                          ; 16 heads (0..15)
     clc
     jmp     .exit
 
-; AH = 0x02 — Read Sectors From Drive (Legacy CHS)
-; Input:
-;   AL = number of sectors to read (1..128)
-;   CH = cylinder low 8 bits
-;   CL = sector (bits 0-5) | cylinder bits 8-9 (bits 6-7)
-;   DH = head
-;   DL = drive (0x80..0xFF)
-;   ES:BX = destination buffer
-; Output:
-;   AH = status (0 = success)
-;   AL = number of sectors read
-;   CF = 0 (success), CF = 1 (error)
+; AH=02h: CHS sector read
+; Input: AL=count (1..128), CH=cyl_lo, CL=sec[5:0]|cyl_hi[7:6], DH=head, DL=drv, ES:BX=buf
+; Output: CF=0 AH=0 AL=sectors read, or CF=1 AH=err
 .fn_chs_read:
     push    ds
     push    es
@@ -87,38 +71,37 @@ int13h_handler:
     push    cx
     push    bx
 
-    mov     di, bx                      ; DI = caller's destination buffer offset from ES:BX
+    mov     di, bx
 
-    ; Calculate LBA = (cylinder * 16 + head) * 63 + (sector - 1)
-    push    ax                          ; Save AL (count)
-    movzx   eax, ch                     ; EAX = cylinder low
+    ; LBA = (cyl * 16 + head) * 63 + (sec - 1)
+    push    ax
+    movzx   eax, ch
     movzx   ebx, cl
-    shr     ebx, 6                      ; EBX = cylinder bits 8-9
+    shr     ebx, 6
     shl     ebx, 8
-    or      eax, ebx                    ; EAX = cylinder
+    or      eax, ebx
 
-    shl     eax, 4                      ; * 16 heads
-    movzx   edx, dh                     ; EDX = head
+    shl     eax, 4
+    movzx   edx, dh
     add     eax, edx
 
     mov     edx, eax
-    shl     eax, 6                      ; * 64
-    sub     eax, edx                    ; * 63
+    shl     eax, 6
+    sub     eax, edx
 
     movzx   edx, cl
-    and     edx, 0x3F                   ; Sector (1..63)
-    dec     edx                         ; 0-based
-    add     eax, edx                    ; EAX = Final LBA
+    and     edx, 0x3F
+    dec     edx
+    add     eax, edx
 
-    mov     ebx, eax                    ; EBX = LBA
-    pop     ax                          ; Restore AL = count
-    movzx   cx, al                      ; CX = count
+    mov     ebx, eax
+    pop     ax
+    movzx   cx, al
 
-    ; Restore original DL (drive number) from stack: [sp + 4] = saved DX
+    ; Original DL sits in saved DX at [sp + 4]
     mov     bp, sp
     mov     dl, [bp + 4]
 
-    ; Check Drive Type
     push    ds
     xor     ax, ax
     mov     ds, ax
@@ -134,7 +117,6 @@ int13h_handler:
     cmp     al, DRV_TYPE_USB_BOT
     je      .chs_via_usb
 
-    ; Legacy ATA PIO
     mov     bp, ATA_PRI_DATA
 .chs_ata_loop:
     push    cx
@@ -185,7 +167,7 @@ int13h_handler:
 .chs_ok:
     pop     bx
     pop     cx
-    mov     al, cl                      ; Return AL = number of sectors read
+    mov     al, cl
     pop     dx
     pop     di
     pop     si
@@ -196,9 +178,7 @@ int13h_handler:
     clc
     jmp     .exit
 
-; AH = 0x42 — Extended Read Sectors from Drive (via DAP)
-; Input:
-;   AH = 0x42, DL = Drive (0x80..0x83), DS:SI = Pointer to Disk Address Packet
+; AH=42h: extended read using DAP (DL=drive, DS:SI=DAP)
 .fn_extended_read:
     push    ds
     push    es
@@ -209,22 +189,19 @@ int13h_handler:
     push    cx
     push    bx
 
-    ; Validate DAP size
     cmp     byte [ds:si], 16
     jb      .dap_err_param
 
-    ; Read DAP fields
-    mov     cx, [ds:si + 2]                 ; Sector count
+    mov     cx, [ds:si + 2]
     test    cx, cx
-    jz      .dap_success                    ; 0 sectors = nothing to do
+    jz      .dap_success
 
-    mov     di, [ds:si + 4]                 ; Buffer offset
-    mov     ax, [ds:si + 6]                 ; Buffer segment
-    mov     es, ax                          ; ES:DI = destination buffer
+    mov     di, [ds:si + 4]
+    mov     ax, [ds:si + 6]
+    mov     es, ax
 
-    mov     ebx, [ds:si + 8]                ; Starting LBA (low 32 bits)
+    mov     ebx, [ds:si + 8]                ; starting LBA[31:0]
 
-    ; Check Drive Type in Scratch RAM (Segment 0x0000)
     push    ds
     xor     ax, ax
     mov     ds, ax
@@ -242,19 +219,16 @@ int13h_handler:
     cmp     al, DRV_TYPE_USB_BOT
     je      .read_via_usb
 
-    ; DL is the drive number (0x80 = Master, 0x81 = Slave)
-    ; Determine base I/O port for Legacy ATA PIO
-    mov     bp, ATA_PRI_DATA                ; Default: Primary ATA channel (0x1F0)
+    mov     bp, ATA_PRI_DATA                ; primary ATA channel (0x1F0)
 
 .sector_read_loop:
-    push    cx                              ; Save remaining sector count
+    push    cx
 
-    ; Read single sector at LBA in EBX to ES:DI
-    ; NOTE: rep insw automatically advances DI by 512 bytes (256 words * 2)
+    ; rep insw advances DI by 512 B
     call    ata_read_one_sector
     jc      .dap_read_fail
 
-    ; If DI wrapped to 0, advance ES by 64KB (0x1000 paragraphs)
+    ; Advance ES by 64 KiB (0x1000 paragraphs) when DI wraps
     test    di, di
     jnz     .next_lba
     mov     ax, es
@@ -262,14 +236,13 @@ int13h_handler:
     mov     es, ax
 
 .next_lba:
-    inc     ebx                             ; Next LBA
+    inc     ebx
 
     pop     cx
     loop    .sector_read_loop
     jmp     .dap_success
 
 .read_via_ahci:
-    ; EBX = LBA, CX = sector count, ES:DI = buffer
     call    ahci_read_sectors
     jc      .dap_read_fail_simple
     jmp     .dap_success
@@ -280,7 +253,6 @@ int13h_handler:
     jmp     .dap_success
 
 .read_via_usb:
-    ; EBX = LBA, CX = sector count, ES:DI = buffer
 .usb_loop:
     push    cx
     mov     cx, 1
@@ -310,7 +282,7 @@ int13h_handler:
     pop     bp
     pop     es
     pop     ds
-    mov     ah, 0x04                        ; Read error
+    mov     ah, 0x04
     stc
     jmp     .exit
 
@@ -337,7 +309,7 @@ int13h_handler:
     pop     bp
     pop     es
     pop     ds
-    ; Keep AH as set by ata_read_one_sector
+    ; preserve AH from ata_read_one_sector
     stc
     jmp     .exit
 
@@ -350,7 +322,7 @@ int13h_handler:
     pop     bp
     pop     es
     pop     ds
-    mov     ah, 0x01                        ; Invalid parameter
+    mov     ah, 0x01
     stc
     jmp     .exit
 
@@ -358,65 +330,56 @@ int13h_handler:
     push    bp
     mov     bp, sp
     jc      .set_cf
-    and     byte [bp + 6], 0xFE             ; Clear caller's CF
+    and     byte [bp + 6], 0xFE             ; clear caller CF
     pop     bp
     iret
 .set_cf:
-    or      byte [bp + 6], 0x01             ; Set caller's CF
+    or      byte [bp + 6], 0x01             ; set caller CF
     pop     bp
     iret
 
-; ATA PIO Single Sector Reader
-; Inputs:
-;   EBX = LBA28
-;   DL  = Drive (0x80=Master, 0x81=Slave)
-;   ES:DI = Destination buffer (512 bytes)
-; Output: CF = 0 on success, CF = 1 on error
+; Read one LBA28 sector using primary ATA PIO.
+; Inputs: EBX=LBA28, DL=drive (0x80 master / 0x81 slave), ES:DI=512 B buffer.
 ata_read_one_sector:
-    push    ebx                             ; Save original 32-bit LBA
+    push    ebx
     push    dx
     push    ax
     push    cx
     push    bp
     mov     bp, sp
 
-    ; Wait until drive is not busy (BSY=0)
     mov     dx, ATA_PRI_STATUS
     call    ata_wait_not_busy
     jc      .ata_err_1
 
-    ; Select Drive and top 4 bits of LBA
-    ; Format: 0xE0 | ((drive & 1) << 4) | (LBA[27:24] & 0x0F)
+    ; Drive/Head: 0xE0 | ((drive & 1) << 4) | LBA[27:24]
     mov     eax, ebx
     shr     eax, 24
     and     al, 0x0F
-    mov     ah, 0xE0                        ; Master (0xE0)
-    test    byte [bp + 6], 0x01             ; Test original drive passed in DL on stack
+    mov     ah, 0xE0
+    test    byte [bp + 6], 0x01             ; saved DL on stack
     jz      .drive_select_ok
-    mov     ah, 0xF0                        ; Slave (0xF0)
+    mov     ah, 0xF0
 .drive_select_ok:
     or      al, ah
     mov     dx, ATA_PRI_DRIVE_HEAD
     out     dx, al
 
-    ; Small delay (400ns) by reading alternate status
+    ; 400 ns settle delay after drive select
     mov     dx, ATA_PRI_CTRL
     in      al, dx
     in      al, dx
     in      al, dx
     in      al, dx
 
-    ; Wait for BSY to clear and DRDY to set
     mov     dx, ATA_PRI_STATUS
     call    ata_wait_ready
     jc      .ata_err_4
 
-    ; Set Sector Count = 1
     mov     dx, ATA_PRI_SEC_CNT
     mov     al, 1
     out     dx, al
 
-    ; Set LBA low, mid, high from original EBX
     mov     dx, ATA_PRI_LBA_LO
     mov     al, bl
     out     dx, al
@@ -430,16 +393,13 @@ ata_read_one_sector:
     mov     al, bl
     out     dx, al
 
-    ; Issue Command: 0x20 (READ SECTORS)
     mov     dx, ATA_PRI_STATUS
-    mov     al, 0x20
+    mov     al, 0x20                        ; READ SECTORS
     out     dx, al
 
-    ; Wait for Data Request (DRQ=1)
     call    ata_wait_drq
     jc      .ata_err_8
 
-    ; Transfer 256 words (512 bytes) from Data port (0x1F0) to ES:DI
     mov     dx, ATA_PRI_DATA
     mov     cx, 256
     cld
@@ -467,10 +427,10 @@ ata_read_one_sector:
     mov     al, ah
     pop     bp
     pop     cx
-    pop     dx                          ; Discard saved AX
-    pop     dx                          ; Restore saved DX
-    pop     ebx                         ; Restore saved EBX
-    mov     ah, al                      ; Restore error code in AH
+    pop     dx                              ; drop saved AX
+    pop     dx
+    pop     ebx
+    mov     ah, al
     stc
     ret
 
@@ -479,7 +439,7 @@ ata_wait_not_busy:
     mov     cx, 0xFFFF
 .loop_bsy:
     in      al, dx
-    test    al, 0x80                        ; BSY bit
+    test    al, 0x80                        ; BSY
     jz      .not_busy_ok
     loop    .loop_bsy
     pop     cx
@@ -495,19 +455,19 @@ ata_wait_ready:
     push    ecx
     push    es
 
-    ; Stage 1: Fast check (~100ms) for CF, DOM, SSD, or already active drive
+    ; Short poll (~100 ms) for SSD/CF/already-spun-up drives
     mov     cx, 0x8000
 .fast_loop:
     in      al, dx
-    test    al, 0x80                        ; BSY bit
+    test    al, 0x80                        ; BSY
     jnz     .fast_next
-    test    al, 0x40                        ; DRDY bit
-    jnz     .rdy_ok                         ; Immediate success!
+    test    al, 0x40                        ; DRDY
+    jnz     .rdy_ok
 .fast_next:
     dec     cx
     jnz     .fast_loop
 
-    ; Only wait for spin-up if a real attached drive is still asserting BSY (not 0x00 or 0xFF).
+    ; Only enter long spin-up wait if BSY is set (ignore 0x00/0xFF floating bus)
     cmp     al, 0xFF
     je      .timeout_early
     test    al, 0x80
@@ -520,37 +480,32 @@ ata_wait_ready:
     ret
 
 .spinup_wait:
-    ; Drive still busy -> wait for mechanical HDD spin-up (POST code 0x29).
+    ; Wait up to ~15 s (273 ticks at 18.2 Hz) for mechanical HDD spin-up
     mov     al, POST_DISK_SPINUP_WAIT
     out     POST_PORT, al
 
-    ; Up to 15s wait using real-time BDA timer tick at 0x0000:0x046C
-    ; 15 seconds at 18.2 Hz is ~273 ticks.
     sti
     xor     ax, ax
     mov     es, ax
-    mov     ebx, [es:0x046C]                ; Start tick count
-    add     ebx, 273                        ; Deadline = current + 273 (~15s)
+    mov     ebx, [es:0x046C]
+    add     ebx, 273
 
-    ; Secondary fallback counter (e.g. 5,000,000 I/O reads)
-    mov     ecx, 5000000
+    mov     ecx, 5000000                    ; fallback loop guard if PIT halted
 
 .spinup_loop:
     in      al, dx
-    test    al, 0x80                        ; BSY bit
+    test    al, 0x80
     jnz     .check_deadline
-    test    al, 0x40                        ; DRDY bit
+    test    al, 0x40
     jnz     .rdy_ok
 
 .check_deadline:
-    ; Primary check: BDA timer ticks
     push    eax
     mov     eax, [es:0x046C]
     cmp     eax, ebx
     pop     eax
     jae     .timeout
 
-    ; Secondary fallback: loop countdown
     dec     ecx
     jnz     .spinup_loop
 
@@ -572,11 +527,11 @@ ata_wait_drq:
     mov     cx, 0xFFFF
 .loop_drq:
     in      al, dx
-    test    al, 0x80                        ; BSY bit
+    test    al, 0x80                        ; BSY
     jnz     .next_drq
-    test    al, 0x01                        ; ERR bit
+    test    al, 0x01                        ; ERR
     jnz     .drq_err
-    test    al, 0x08                        ; DRQ bit
+    test    al, 0x08                        ; DRQ
     jnz     .drq_ok
 .next_drq:
     loop    .loop_drq

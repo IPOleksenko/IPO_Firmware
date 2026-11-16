@@ -15,11 +15,11 @@ Boot ROM Handover / Standalone Reset Vector (CS:IP = 0xF000:0x000C)
 Low-Level Firmware Services Setup
   ├─ COM1 UART Serial initialization (115200 baud, 8N1)
   ├─ IVT & BDA setup: Registers INT 10h–17h, INT 1Ah, INT 1Ch, PIT Ch0 (18.2 Hz), PIC IRQs 0/1/2
-  ├─ ACPI 1.0 tables in EBDA (0x9FC00): RSDP, RSDT, and MADT
+  ├─ ACPI tables in EBDA (0x9FC00): RSDP, RSDT, and MADT
   ├─ PCI Bus Enumeration (buses 0..3): VGA (0x03), Bridges (0x06), AHCI (0x01:0x06), NVMe (0x01:0x08), USB (0x0C:0x03), Network (0x02)
   ├─ Video Subsystem (when VGA found): Option ROM (0xC000:0003, chained via INT 42h) or native Mode 03h text
   ├─ A20 Gate: Enabled and verified via Fast A20 (port 0x92) with PS/2 KBC fallback
-  ├─ Memory Detection: Boot ROM SCRATCH_TOTAL_RAM (0x0514) -> CMOS 0x34/0x35 -> CMOS 0x30/0x31 -> 128 MB default (E820 / E801)
+  ├─ Memory Detection: Boot ROM SCRATCH_TOTAL_RAM (0x0514) -> CMOS 0x34/0x35 -> CMOS 0x30/0x31 -> 128 MiB default (E820 / E801)
   └─ PS/2 Keyboard Controller: Scan Code Set 2 -> Set 1 translation and keyboard IRQ1 enabled
   │
   ▼
@@ -79,12 +79,12 @@ Builds a ROM embedding the specified Boot ROM and boots the target OS:
 ```bash
 make run BOOTROM=path/to/bootrom.bin OS=path/to/disk.img
 make run OS=path/to/disk.img DRIVE_TYPE=ahci   # SATA AHCI (default: ide)
-make run OS=path/to/disk.img DRIVE_TYPE=usb    # USB 2.0 EHCI Mass Storage
+make run OS=path/to/disk.img DRIVE_TYPE=usb    # USB EHCI Mass Storage
 ```
 
 Additional `make run` variables supported in `mk/config.mk`:
 - `DISK=path/to/secondary.img` (optional secondary IDE disk when `DRIVE_TYPE=ide`; auto-detects `disk.img` beside `OS`)
-- `CPU=<model>` and `MEM=<MB>` (default `512` MiB; configured in `mk/config.mk`)
+- `CPU=<model>` and `MEM=<MiB>` (default `512` MiB; configured in `mk/config.mk`)
 - `QEMU_EXTRA="..."` (extra arguments passed directly to `qemu-system-i386`, e.g., attaching an NVMe controller)
 
 ### 🔊 Audio Configuration
@@ -144,15 +144,15 @@ Firmware hands over execution to the operating system bootloader using standard 
 | | `AH=03h` | Get Cursor Position & Shape (returns `DH/DL`, `CH/CL`) |
 | | `AH=0Eh` | Teletype Output with scrolling (mirrored to COM1 serial) |
 | **INT 11h** | — | Equipment Determination (returns Equipment Word `0x4223` from BDA `0x0410` in `AX`) |
-| **INT 12h** | — | Get Conventional Memory Size (returns `640` KB from BDA `0x0413` in `AX`) |
+| **INT 12h** | — | Get Conventional Memory Size (returns `640` KiB from BDA `0x0413` in `AX`) |
 | **INT 13h** | `AH=00h` | Reset Disk System |
 | | `AH=02h` | Read Sectors from Drive (Legacy CHS addressing, `0x80..0x83`) |
 | | `AH=08h` | Get Drive Parameters (Geometry: Cylinders, Heads, Sectors, Drives) |
 | | `AH=41h` | Installation Check / EDD Extensions (`BX=0x55AA` $\to$ `BX=0xAA55`) |
 | | `AH=42h` | Extended Read Sectors via Disk Address Packet (DAP, LBA addressing, `0x80..0x83`) |
 | **INT 14h** | `AH=03h` | Serial Port Services stub (returns `AH=0x60` line status, `AL=0x00` modem status) |
-| **INT 15h** | `EAX=0xE820` | Query System Address Map (returns 4 SMAP entries; E820 entry 0 = 639 KB, EBDA + ROM Reserved `0x9FC00-0xFFFFF`, Extended RAM clamped to TOLUD `0xE0000000`) |
-| | `AX=0xE801` | Get Memory Size for >64MB Configurations (`AX=CX` 1–16 MB in KB, `BX=DX` >16 MB in 64 KB blocks) |
+| **INT 15h** | `EAX=0xE820` | Query System Address Map (returns 4 SMAP entries; E820 entry 0 = 639 KiB, EBDA + ROM Reserved `0x9FC00-0xFFFFF`, Extended RAM clamped to TOLUD `0xE0000000`) |
+| | `AX=0xE801` | Get Memory Size for >64 MiB Configurations (`AX=CX` 1–16 MiB in KiB, `BX=DX` >16 MiB in 64 KiB blocks) |
 | | `AX=0x2401` | Enable A20 Gate (Fast A20 via port `0x92` with PS/2 KBC `0xD1 -> 0xDF` fallback) |
 | **INT 16h** | `AH=00h` / `AH=10h` | Read Keystroke / Extended Read Keystroke from PS/2 keyboard buffer (blocking) |
 | | `AH=01h` / `AH=11h` | Check Keystroke availability (non-blocking, updates ZF flag) |
@@ -174,7 +174,7 @@ Firmware hands over execution to the operating system bootloader using standard 
   - **IDE / PATA:** Legacy ATA PIO (`0x1F0` / `0x170`).
   - **SATA AHCI:** PCI AHCI HBA memory-mapped I/O with FIS & command headers.
   - **PCIe NVMe:** PCI NVMe SSD with Admin & I/O submission/completion queues.
-  - **USB 2.0 Mass Storage:** PCI EHCI controller with Bulk-Only Transport (BOT).
+  - **USB Mass Storage:** PCI EHCI controller with Bulk-Only Transport (BOT).
 - **Dual Console Logging & Headless Safe:** Diagnostic messages are output simultaneously to COM1 UART (`115200 8N1`) and, when a PCI VGA adapter is detected (`SCRATCH_VGA_FOUND = 1`), to the VGA text screen. Bounded timeout loops prevent hangs when no serial receiver is attached.
 
 ---

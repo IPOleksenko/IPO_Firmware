@@ -1,61 +1,48 @@
-; ahci.asm — SATA AHCI Controller Driver for x86 real mode
-; Implements AHCI HBA detection, port initialization, and sector reading via DMA.
-; Uses Flat Real Mode (Unreal Mode with FS descriptor limit = 4GB) to access 32-bit MMIO.
+; Real-mode SATA AHCI driver (uses FS 4 GiB unreal mode for 32-bit HBA MMIO and DMA)
 
 BITS 16
 
-; Unreal Mode Setup (enables FS to access full 4GB linear memory)
+; Load FS with a 4 GiB flat descriptor (G=1, D/B=0) using a temp stack GDT
 enable_unreal_mode:
     push    eax
     push    ebx
     push    ds
 
     cli
-    ; Build 16-byte temporary GDT on stack:
-    ; Selector 0x08: Flat 4GB Data (Base=0, Limit=4GB, G=1, D/B=0, P=1, DPL=0, S=1, Type=0x2)
-    ; Value: 0x008F9200_0000FFFF
+    ; Selector 0x08: 4 GiB flat data, selector 0x00: null
     push    dword 0x008F9200
     push    dword 0x0000FFFF
-    ; Selector 0x00: Null Descriptor
     push    dword 0
     push    dword 0
 
-    ; Compute 32-bit linear address of GDT on stack: (SS << 4) + SP
+    ; Linear GDT base = (SS << 4) + SP
     mov     bx, ss
     movzx   ebx, bx
     shl     ebx, 4
     movzx   eax, sp
-    add     ebx, eax                ; EBX = linear base of GDT
+    add     ebx, eax
 
-    ; Build 6-byte GDTR structure on stack
-    push    ebx                     ; Linear Base (4 bytes)
-    push    word 15                 ; Limit = 16 - 1 = 15 (2 bytes)
+    push    ebx
+    push    word 15
 
-    ; Load GDTR
     mov     bx, sp
     lgdt    [ss:bx]
-
-    ; Clean up GDTR from stack (6 bytes)
     add     sp, 6
 
-    ; Enter protected mode briefly to load FS descriptor cache
     mov     eax, cr0
     or      al, 0x01
     mov     cr0, eax
-    jmp     short $+2               ; Serialize CPU pipeline
+    jmp     short $+2                       ; serialize pipeline
 
-    ; Load FS with flat 4GB selector (0x08)
     mov     ax, 0x08
     mov     fs, ax
 
-    ; Exit protected mode back to real mode
     mov     eax, cr0
     and     al, 0xFE
     mov     cr0, eax
-    jmp     FW_RAM_SEG:.real_mode           ; Far jump to flush prefetch queue and reload CS
+    jmp     FW_RAM_SEG:.real_mode           ; reload CS and flush prefetch queue
 .real_mode:
 
-    ; Clean up GDT from stack (16 bytes)
     add     sp, 16
 
     pop     ds
@@ -63,69 +50,64 @@ enable_unreal_mode:
     pop     eax
     ret
 
-; ahci_init — Initialize AHCI Controller discovered by PCI scan
-; Returns: CF = 0 on success (drive ready), CF = 1 if no SATA drive found
+; Initialize first SATA disk on discovered AHCI HBA; returns CF=0 on success.
 ahci_init:
     pushad
     push    es
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
+    mov     es, ax
 
-    ; Check if AHCI was found during PCI scan
     cmp     byte [es:SCRATCH_AHCI_FOUND], 1
     jne     .ahci_not_found
 
-    ; Enable 4GB access via FS
     call    enable_unreal_mode
 
-    mov     esi, [es:SCRATCH_AHCI_BAR5]     ; ESI = ABAR (AHCI Base Address)
+    mov     esi, [es:SCRATCH_AHCI_BAR5]     ; ABAR
     test    esi, esi
     jz      .ahci_not_found
 
-    ; Enable AHCI Mode: GHC.AE = 1 (ABAR + 0x04, bit 31)
+    ; Set GHC.AE (ABAR + 0x04 bit 31)
     a32 mov eax, [fs:esi + 0x04]
     or      eax, 0x80000000
     a32 mov [fs:esi + 0x04], eax
 
-    ; Read Implemented Ports mask: PI (ABAR + 0x0C)
+    ; Read PI (implemented ports mask at ABAR + 0x0C)
     a32 mov eax, [fs:esi + 0x0C]
     mov     [es:SCRATCH_AHCI_PORTS], eax
     test    eax, eax
     jz      .ahci_not_found
 
-    ; Probe ports 0..31 for connected SATA disk drive
-    xor     ecx, ecx                        ; Port index (0..31)
+    xor     ecx, ecx
 .port_loop:
     mov     eax, [es:SCRATCH_AHCI_PORTS]
     bt      eax, ecx
-    jnc     .next_port                      ; Port not implemented
+    jnc     .next_port
 
-    ; Calculate Port MMIO base: PxBase = ABAR + 0x100 + (port * 0x80)
+    ; PxBase = ABAR + 0x100 + (port * 0x80)
     mov     edi, ecx
-    shl     edi, 7                          ; port * 128
+    shl     edi, 7
     add     edi, 0x100
-    add     edi, esi                        ; EDI = PxBase
+    add     edi, esi
 
-    ; Assert Spin-Up Device (SUD, bit 1) and Power On Device (POD, bit 2) in PxCMD (+0x18)
+    ; Assert SUD (bit 1) and POD (bit 2) in PxCMD (+0x18)
     a32 mov eax, [fs:edi + 0x18]
     or      eax, 0x00000006
     a32 mov [fs:edi + 0x18], eax
 
-    ; Check PxSSTS (SCR0) at offset +0x28: DET field (bits 3:0)
-    ; DET == 3: Device detected and physical communication established
+    ; PxSSTS (+0x28) DET[3:0] == 3 means device present and PHY up
     a32 mov eax, [fs:edi + 0x28]
     and     al, 0x0F
     cmp     al, 0x03
     jne     .next_port
 
-    ; Check PxSIG (+0x24): skip ATAPI optical drives (0xEB140101), PM, or SEMB
+    ; Skip ATAPI (0xEB140101), Port Multiplier (0x96690101), SEMB (0xC33C0101)
     a32 mov eax, [fs:edi + 0x24]
-    cmp     eax, 0xEB140101                 ; SATAPI CD/DVD
+    cmp     eax, 0xEB140101
     je      .next_port
-    cmp     eax, 0x96690101                 ; Port Multiplier
+    cmp     eax, 0x96690101
     je      .next_port
-    cmp     eax, 0xC33C0101                 ; Enclosure Management Bridge
+    cmp     eax, 0xC33C0101
     je      .next_port
     jmp     .port_connected
 
@@ -134,19 +116,17 @@ ahci_init:
     cmp     ecx, 32
     jb      .port_loop
 
-    ; No connected ports found
     jmp     .ahci_not_found
 
 .port_connected:
-    ; ECX is active port index, EDI is PxBase
     mov     byte [es:SCRATCH_AHCI_PORT_N], cl
 
-    ; Stop Port: clear PxCMD.ST (bit 0) and PxCMD.FRE (bit 4)
+    ; Stop port: clear PxCMD.ST (bit 0) and PxCMD.FRE (bit 4)
     a32 mov eax, [fs:edi + 0x18]
-    and     eax, ~0x0011                    ; Clear bit 0 (ST) and bit 4 (FRE)
+    and     eax, ~0x0011
     a32 mov [fs:edi + 0x18], eax
 
-    ; Small wait for CR (bit 15) and FR (bit 14) to clear
+    ; Wait for PxCMD.CR (bit 15) and PxCMD.FR (bit 14) to clear
     mov     bp, 0x1000
 .wait_stop:
     a32 mov eax, [fs:edi + 0x18]
@@ -156,22 +136,21 @@ ahci_init:
     jnz     .wait_stop
 .port_stopped:
 
-    ; Program Command List Base Address (PxCLB at +0x00)
-    mov     dword [es:SCRATCH_AHCI_PXBASE], edi ; Save PxBase without overwriting BAR5
+    ; Program PxCLB (+0x00) and PxFB (+0x08)
+    mov     dword [es:SCRATCH_AHCI_PXBASE], edi
     a32 mov dword [fs:edi + 0x00], AHCI_CMD_LIST_ADDR
-    a32 mov dword [fs:edi + 0x04], 0        ; Upper 32 bits = 0
+    a32 mov dword [fs:edi + 0x04], 0
 
-    ; Program Received FIS Base Address (PxFB at +0x08)
     a32 mov dword [fs:edi + 0x08], AHCI_RX_FIS_ADDR
-    a32 mov dword [fs:edi + 0x0C], 0        ; Upper 32 bits = 0
+    a32 mov dword [fs:edi + 0x0C], 0
 
-    ; Clear errors: write 1s to PxSERR (offset +0x30) and clear PxIS (offset +0x10)
+    ; Clear PxSERR (+0x30) and PxIS (+0x10)
     a32 mov dword [fs:edi + 0x30], 0xFFFFFFFF
     a32 mov dword [fs:edi + 0x10], 0xFFFFFFFF
 
-    ; Start Port: set PxCMD.FRE (bit 4) and PxCMD.ST (bit 0)
+    ; Start port: set PxCMD.FRE (bit 4) and PxCMD.ST (bit 0)
     a32 mov eax, [fs:edi + 0x18]
-    or      eax, 0x0011                     ; Set ST (bit 0) and FRE (bit 4)
+    or      eax, 0x0011
     a32 mov [fs:edi + 0x18], eax
 
     pop     es
@@ -185,108 +164,91 @@ ahci_init:
     stc
     ret
 
-; ahci_read_sectors — Read sectors from SATA drive via AHCI DMA
-; Inputs:
-;   EBX = Starting LBA28/LBA48
-;   CX  = Sector count (1..128)
-;   ES:DI = Target buffer address
-; Output:
-;   CF = 0 on success, CF = 1 on error (AH = status code)
+; Read sectors using AHCI DMA.
+; Inputs: EBX=LBA, CX=count (1..128), ES:DI=dst buffer.
+; Output: CF=0 on success, CF=1 with AH=status on error.
 ahci_read_sectors:
     pushad
     push    ds
     push    es
 
-    ; Calculate physical destination address: (ES << 4) + DI
+    ; Linear destination = (ES << 4) + DI
     mov     ax, es
     movzx   eax, ax
     shl     eax, 4
     movzx   edx, di
     add     eax, edx
-    mov     ebp, eax                        ; EBP = 32-bit physical destination buffer
+    mov     ebp, eax
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
-    mov     edi, [es:SCRATCH_AHCI_PXBASE]   ; EDI = PxBase
+    mov     es, ax
+    mov     edi, [es:SCRATCH_AHCI_PXBASE]
 
-    ; Ensure 4GB access via FS
     call    enable_unreal_mode
 
-    ; Build Command Header (Slot 0 at AHCI_CMD_LIST_ADDR)
-    ; Flags (16-bit): CFL=5 (5 dwords FIS length) -> 0x0005
-    ; PRDTL (16-bit): 1 entry -> 0x0001
-    ; Dword 0: (PRDTL << 16) | CFL = 0x00010005
+    ; Command header slot 0: PRDTL=1, CFL=5 dwords -> 0x00010005
     mov     esi, AHCI_CMD_LIST_ADDR
     a32 mov dword [fs:esi + 0x00], 0x00010005
-    a32 mov dword [fs:esi + 0x04], 0        ; PRDBC = 0 (bytes transferred)
-    a32 mov dword [fs:esi + 0x08], AHCI_CMD_TAB_ADDR ; Command Table Base
-    a32 mov dword [fs:esi + 0x0C], 0        ; Upper 32 bits = 0
+    a32 mov dword [fs:esi + 0x04], 0
+    a32 mov dword [fs:esi + 0x08], AHCI_CMD_TAB_ADDR
+    a32 mov dword [fs:esi + 0x0C], 0
 
-    ; Build Command Table (at AHCI_CMD_TAB_ADDR)
-    ;    Offset 0x00: Host-to-Device Register FIS (20 bytes)
+    ; 20 B Host-to-Device Register FIS at AHCI_CMD_TAB_ADDR
     mov     esi, AHCI_CMD_TAB_ADDR
 
-    ; Zero FIS memory
     a32 mov dword [fs:esi + 0x00], 0
     a32 mov dword [fs:esi + 0x04], 0
     a32 mov dword [fs:esi + 0x08], 0
     a32 mov dword [fs:esi + 0x0C], 0
     a32 mov dword [fs:esi + 0x10], 0
 
-    ; FIS Dword 0: [Command(23:16) | 0x80(C-bit)(15:8) | FIS_TYPE(7:0)]
-    ; ATA Command 0x25 = READ DMA EXT
-    ; Value: (0x25 << 16) | (0x80 << 8) | 0x27 = 0x00258027
+    ; FIS DW0: ATA READ DMA EXT (0x25), C=1 (0x80), FIS type 0x27
     a32 mov dword [fs:esi + 0x00], 0x00258027
 
-    ; FIS Dword 1: [Device(31:24) | LBA_Mid(23:16) | LBA_Low(15:8) | LBA_0(7:0)]
-    ; Device = 0x40 (LBA mode)
+    ; FIS DW1: Device=0x40 (LBA) | LBA[23:0]
     mov     eax, ebx
-    and     eax, 0x00FFFFFF                 ; LBA [23:0]
-    or      eax, 0x40000000                 ; Set Device register bit 6 (LBA)
+    and     eax, 0x00FFFFFF
+    or      eax, 0x40000000
     a32 mov [fs:esi + 0x04], eax
 
-    ; FIS Dword 2: [Features_High(31:24) | LBA_5(23:16) | LBA_4(15:8) | LBA_3(7:0)]
+    ; FIS DW2: LBA[31:24]
     mov     eax, ebx
     shr     eax, 24
-    and     eax, 0x000000FF                 ; LBA [31:24]
+    and     eax, 0x000000FF
     a32 mov [fs:esi + 0x08], eax
 
-    ; FIS Dword 3: [Control(31:24) | ICC(23:16) | Count_High(15:8) | Count_Low(7:0)]
-    movzx   eax, cx                         ; Sector count
+    ; FIS DW3: sector count
+    movzx   eax, cx
     a32 mov [fs:esi + 0x0C], eax
 
-    ; Build PRDT Entry 0 (at AHCI_CMD_TAB_ADDR + 0x80)
-    ; Data Base Address: physical buffer in EBP
+    ; PRDT entry 0 (+0x80)
     a32 mov [fs:esi + 0x80], ebp
-    a32 mov dword [fs:esi + 0x84], 0        ; Upper 32 bits = 0
-    a32 mov dword [fs:esi + 0x88], 0        ; Reserved = 0
+    a32 mov dword [fs:esi + 0x84], 0
+    a32 mov dword [fs:esi + 0x88], 0
 
-    ; Byte count: (sectors * 512) - 1, bit 31 = Interrupt on Completion
+    ; DBC = (sectors * 512) - 1, bit 31 = IOC
     movzx   eax, cx
-    shl     eax, 9                          ; sectors * 512 bytes
-    dec     eax                             ; (byte_count - 1)
-    or      eax, 0x80000000                 ; Set bit 31 (IOC)
+    shl     eax, 9
+    dec     eax
+    or      eax, 0x80000000
     a32 mov [fs:esi + 0x8C], eax
 
-    ; Issue Command: set bit 0 in PxCI (offset +0x38)
+    ; Issue slot 0 in PxCI (+0x38)
     a32 mov dword [fs:edi + 0x38], 0x00000001
 
-    ; Poll for completion: wait until PxCI bit 0 clears
-    mov     ecx, 0x000FFFFF                 ; Timeout counter
+    mov     ecx, 0x000FFFFF
 .poll_ci:
     a32 mov eax, [fs:edi + 0x38]
     test    eax, 0x00000001
-    jz      .cmd_finished                   ; Bit cleared -> DMA complete!
+    jz      .cmd_finished
 
-    ; Check for error in PxTFD (offset +0x20)
-    a32 mov eax, [fs:edi + 0x20]
-    test    al, 0x01                        ; ERR bit (bit 0 of status)
+    a32 mov eax, [fs:edi + 0x20]            ; PxTFD ERR bit 0
+    test    al, 0x01
     jnz     .cmd_error
 
     dec     ecx
     jnz     .poll_ci
 
-    ; Timeout!
     jmp     .cmd_error
 
 .cmd_finished:
@@ -301,6 +263,6 @@ ahci_read_sectors:
     pop     es
     pop     ds
     popad
-    mov     ah, 0x04                        ; Sector read error
+    mov     ah, 0x04
     stc
     ret

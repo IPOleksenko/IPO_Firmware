@@ -1,77 +1,67 @@
-; nvme.asm — NVMe (NVM Express) Storage Driver for x86 Firmware
-; Implements controller init, Admin/IO queue setup, and sector reading via DMA.
-; Uses Flat Real Mode (Unreal Mode with FS descriptor limit = 4GB) to access MMIO.
+; Real-mode NVMe driver (Admin/IO queue setup and polled DMA reads in FS unreal mode)
 
 BITS 16
 
 %include "boot_constants.inc"
 
-; nvme_init — Initialize NVMe Controller discovered by PCI scan
-; Returns: CF = 0 on success (drive ready), CF = 1 if no NVMe drive found
+; Initialize NVMe controller and create IO CQ/SQ pair; returns CF=0 on success.
 nvme_init:
     pushad
     push    es
 
     xor     ax, ax
-    mov     es, ax                          ; ES = 0x0000 (Scratch RAM)
+    mov     es, ax
 
-    ; Check if NVMe was discovered by PCI scan
     cmp     byte [es:SCRATCH_NVME_FOUND], 1
     jne     .nvme_fail
 
-    ; Enable 4GB access via FS
     call    enable_unreal_mode
 
-    mov     esi, [es:SCRATCH_NVME_BAR0]     ; ESI = NVMe MMIO Base Address
+    mov     esi, [es:SCRATCH_NVME_BAR0]
     test    esi, esi
     jz      .nvme_fail
 
-    ; Reset Controller: CC.EN = 0, wait for CSTS.RDY == 0
-    a32 mov eax, [fs:esi + 0x14]            ; Read CC (offset 0x14)
-    and     eax, ~0x00000001                ; Clear bit 0 (EN = 0)
+    ; Disable controller (CC.EN = 0) and wait for CSTS.RDY == 0
+    a32 mov eax, [fs:esi + 0x14]
+    and     eax, ~0x00000001
     a32 mov [fs:esi + 0x14], eax
 
     mov     ecx, 0x001FFFFF
 .wait_reset:
-    a32 mov eax, [fs:esi + 0x1C]            ; Read CSTS (offset 0x1C)
-    test    al, 0x01                        ; RDY bit
+    a32 mov eax, [fs:esi + 0x1C]
+    test    al, 0x01
     jz      .controller_reset_ok
     dec     ecx
     jnz     .wait_reset
     jmp     .nvme_fail
 
 .controller_reset_ok:
-    ; Zero 16KB Queue Memory (0x3000 - 0x6FFF)
+    ; Zero 16 KiB queue region (0x3000..0x6FFF)
     push    di
     xor     di, di
-    mov     ax, 0x3000 / 16                 ; Segment 0x0300
+    mov     ax, 0x3000 / 16
     mov     es, ax
     xor     eax, eax
-    mov     cx, 4096                        ; 4096 dwords = 16 KB
+    mov     cx, 4096
     cld
     rep     stosd
     pop     di
 
     xor     ax, ax
-    mov     es, ax                          ; Restore ES = 0x0000
+    mov     es, ax
 
-    ; Program Admin Queue Attributes (AQA) and Addresses (ASQ, ACQ)
-    ; AQA (offset 0x24): ACQS (bits 27:16) = 15, ASQS (bits 11:0) = 15 (16 entries each)
+    ; AQA (+0x24): 16-entry Admin CQ/SQ (ACQS=15, ASQS=15)
     a32 mov dword [fs:esi + 0x24], 0x000F000F
 
-    ; ASQ (offset 0x28): 64-bit base address = 0x3000
     a32 mov dword [fs:esi + 0x28], NVME_ADMIN_SQ_ADDR
     a32 mov dword [fs:esi + 0x2C], 0x00000000
 
-    ; ACQ (offset 0x30): 64-bit base address = 0x4000
     a32 mov dword [fs:esi + 0x30], NVME_ADMIN_CQ_ADDR
     a32 mov dword [fs:esi + 0x34], 0x00000000
 
-    ; Enable Controller: CC.IOCQES=4 (16B), CC.IOSQES=6 (64B), CC.EN=1
-    ;    CC value = 0x00460001
+    ; Enable controller: CC.IOCQES=4 (16 B), CC.IOSQES=6 (64 B), CC.EN=1
     a32 mov dword [fs:esi + 0x14], 0x00460001
 
-    ; Wait for CSTS.RDY == 1
     mov     ecx, 0x001FFFFF
 .wait_ready:
     a32 mov eax, [fs:esi + 0x1C]
@@ -82,22 +72,20 @@ nvme_init:
     jmp     .nvme_fail
 
 .controller_enabled:
-    ; Create IO Completion Queue (Admin Opcode 0x05) at Admin SQ slot 0
+    ; Create IO CQ (opcode 0x05, QID=1, QSIZE=15, PC=1) in Admin SQ slot 0
     mov     edi, NVME_ADMIN_SQ_ADDR
-    a32 mov dword [fs:edi + 0x00], 0x00000005 ; CDW0: Opcode 0x05 (Create IO CQ), CID=0
-    a32 mov dword [fs:edi + 0x04], 0x00000000 ; CDW1: NSID=0
-    a32 mov dword [fs:edi + 0x18], NVME_IO_CQ_ADDR ; CDW6 (PRP1): 0x6000
-    a32 mov dword [fs:edi + 0x28], 0x000F0001 ; CDW10: QSIZE=15 (16 entries), QID=1
-    a32 mov dword [fs:edi + 0x2C], 0x00000001 ; CDW11: Physically Contiguous (PC=1)
+    a32 mov dword [fs:edi + 0x00], 0x00000005
+    a32 mov dword [fs:edi + 0x04], 0x00000000
+    a32 mov dword [fs:edi + 0x18], NVME_IO_CQ_ADDR
+    a32 mov dword [fs:edi + 0x28], 0x000F0001
+    a32 mov dword [fs:edi + 0x2C], 0x00000001
 
-    ; Ring Admin SQ Tail Doorbell (offset 0x1000) = 1
-    a32 mov dword [fs:esi + 0x1000], 1
+    a32 mov dword [fs:esi + 0x1000], 1      ; Admin SQ0 tail doorbell
 
-    ; Poll Admin CQ Slot 0 (offset 0x4000) for Phase bit 1 at byte offset 14
     mov     ecx, 0x001FFFFF
 .wait_admin_cq0:
-    a32 mov ax, [fs:NVME_ADMIN_CQ_ADDR + 14]  ; Status word + Phase bit
-    test    al, 0x01                         ; Phase tag bit 0
+    a32 mov ax, [fs:NVME_ADMIN_CQ_ADDR + 14]
+    test    al, 0x01                        ; phase bit
     jnz     .admin_cq0_done
     dec     ecx
     jnz     .wait_admin_cq0
@@ -106,21 +94,18 @@ nvme_init:
 .admin_cq0_done:
     test    ax, 0xFFFE
     jnz     .nvme_fail
-    ; Ring Admin CQ Head Doorbell (offset 0x1004) = 1
-    a32 mov dword [fs:esi + 0x1004], 1
+    a32 mov dword [fs:esi + 0x1004], 1      ; Admin CQ0 head doorbell
 
-    ; Create IO Submission Queue (Admin Opcode 0x01) at Admin SQ slot 1
+    ; Create IO SQ (opcode 0x01, QID=1, CQID=1, QSIZE=15, PC=1) in Admin SQ slot 1
     mov     edi, NVME_ADMIN_SQ_ADDR + 64
-    a32 mov dword [fs:edi + 0x00], 0x00010001 ; CDW0: Opcode 0x01 (Create IO SQ), CID=1
-    a32 mov dword [fs:edi + 0x04], 0x00000000 ; CDW1: NSID=0
-    a32 mov dword [fs:edi + 0x18], NVME_IO_SQ_ADDR ; CDW6 (PRP1): 0x5000
-    a32 mov dword [fs:edi + 0x28], 0x000F0001 ; CDW10: QSIZE=15 (16 entries), QID=1
-    a32 mov dword [fs:edi + 0x2C], 0x00010001 ; CDW11: CQID=1, PC=1
+    a32 mov dword [fs:edi + 0x00], 0x00010001
+    a32 mov dword [fs:edi + 0x04], 0x00000000
+    a32 mov dword [fs:edi + 0x18], NVME_IO_SQ_ADDR
+    a32 mov dword [fs:edi + 0x28], 0x000F0001
+    a32 mov dword [fs:edi + 0x2C], 0x00010001
 
-    ; Ring Admin SQ Tail Doorbell (offset 0x1000) = 2
     a32 mov dword [fs:esi + 0x1000], 2
 
-    ; Poll Admin CQ Slot 1 (offset 0x4010) for Phase bit 1
     mov     ecx, 0x001FFFFF
 .wait_admin_cq1:
     a32 mov ax, [fs:NVME_ADMIN_CQ_ADDR + 16 + 14]
@@ -133,15 +118,13 @@ nvme_init:
 .admin_cq1_done:
     test    ax, 0xFFFE
     jnz     .nvme_fail
-    ; Ring Admin CQ Head Doorbell (offset 0x1004) = 2
     a32 mov dword [fs:esi + 0x1004], 2
 
-    ; Save NVMe device parameters in Scratch RAM
-    mov     dword [es:SCRATCH_NVME_NSID], 1       ; Primary Namespace 1
-    mov     word [es:SCRATCH_NVME_SEC_SIZE], 512  ; 512-byte logical sectors
+    mov     dword [es:SCRATCH_NVME_NSID], 1
+    mov     word [es:SCRATCH_NVME_SEC_SIZE], 512
     mov     byte [es:SCRATCH_NVME_SQ_TAIL], 0
     mov     byte [es:SCRATCH_NVME_CQ_HEAD], 0
-    mov     byte [es:SCRATCH_NVME_CQ_PHASE], 1    ; Expected phase bit starts at 1
+    mov     byte [es:SCRATCH_NVME_CQ_PHASE], 1
 
     pop     es
     popad
@@ -155,91 +138,79 @@ nvme_init:
     ret
 
 
-; nvme_read_sectors — Read Sectors via NVMe I/O Queue (Opcode 0x02: Read)
-; Inputs:
-;   EBX   = Starting LBA (32-bit)
-;   CX    = Sector count (1..64)
-;   ES:DI = Destination buffer
-; Returns:
-;   CF = 0 on success, CF = 1 on error
+; Read sectors using NVMe IO SQ 1 (opcode 0x02).
+; Inputs: EBX=LBA32, CX=count (1..64), ES:DI=dst buffer.
 nvme_read_sectors:
     pushad
     push    ds
     push    es
 
-    ; Ensure 4GB Unreal Mode limit on FS
     call    enable_unreal_mode
 
-    ; Save destination ES:DI for DMA linear address computation
     mov     ax, es
     movzx   eax, ax
     shl     eax, 4
     movzx   edx, di
-    add     eax, edx                        ; EAX = Physical Linear Target Address
-    mov     ebp, eax                        ; EBP = Target Buffer PRP1
+    add     eax, edx
+    mov     ebp, eax                        ; physical PRP1
 
     xor     ax, ax
-    mov     ds, ax                          ; DS = 0x0000 (Scratch RAM)
+    mov     ds, ax
 
-    mov     esi, [ds:SCRATCH_NVME_BAR0]     ; ESI = MMIO Base
+    mov     esi, [ds:SCRATCH_NVME_BAR0]
     test    esi, esi
     jz      .read_error
 
-    ; Loop 1 sector (512 bytes) per NVMe Read command so we never require a PRP List
+    ; Issue 1 sector (512 B) per command to avoid needing a PRP list
 .sector_loop:
     push    cx
     push    ebx
 
-    ; Get current IO SQ Tail (0..15)
     movzx   edx, byte [ds:SCRATCH_NVME_SQ_TAIL]
     mov     edi, edx
-    shl     edi, 6                          ; edi = tail * 64
-    add     edi, NVME_IO_SQ_ADDR            ; EDI = slot address in IO SQ
+    shl     edi, 6
+    add     edi, NVME_IO_SQ_ADDR
 
-    ; Construct NVM Read Command (Opcode 0x02) for 1 block (NLB = 0)
-    a32 mov dword [fs:edi + 0x00], 0x00000002 ; CDW0: Opcode 0x02 (Read)
+    a32 mov dword [fs:edi + 0x00], 0x00000002 ; Read (0x02)
     mov     eax, [ds:SCRATCH_NVME_NSID]
-    a32 mov dword [fs:edi + 0x04], eax        ; CDW1: NSID = 1
-    a32 mov dword [fs:edi + 0x08], 0          ; CDW2
-    a32 mov dword [fs:edi + 0x0C], 0          ; CDW3
-    a32 mov dword [fs:edi + 0x10], 0          ; CDW4
-    a32 mov dword [fs:edi + 0x14], 0          ; CDW5
-    a32 mov dword [fs:edi + 0x18], ebp        ; CDW6 (PRP1): Target Address
-    a32 mov dword [fs:edi + 0x1C], 0          ; CDW7 (PRP1 high)
+    a32 mov dword [fs:edi + 0x04], eax
+    a32 mov dword [fs:edi + 0x08], 0
+    a32 mov dword [fs:edi + 0x0C], 0
+    a32 mov dword [fs:edi + 0x10], 0
+    a32 mov dword [fs:edi + 0x14], 0
+    a32 mov dword [fs:edi + 0x18], ebp        ; PRP1
+    a32 mov dword [fs:edi + 0x1C], 0
 
-    ; Set PRP2 = next 4KB page boundary in case 512-byte buffer straddles a 4KB boundary
+    ; PRP2 = next 4 KiB page in case the 512 B buffer straddles a page boundary
     mov     eax, ebp
     add     eax, 0x1000
     and     eax, 0xFFFFF000
-    a32 mov dword [fs:edi + 0x20], eax        ; CDW8 (PRP2)
-    a32 mov dword [fs:edi + 0x24], 0          ; CDW9 (PRP2 high)
-    a32 mov dword [fs:edi + 0x28], ebx        ; CDW10: Starting LBA low 32 bits
-    a32 mov dword [fs:edi + 0x2C], 0          ; CDW11: Starting LBA high 32 bits
-    a32 mov dword [fs:edi + 0x30], 0          ; CDW12: NLB = 0 (1 sector)
-    a32 mov dword [fs:edi + 0x34], 0          ; CDW13
-    a32 mov dword [fs:edi + 0x38], 0          ; CDW14
-    a32 mov dword [fs:edi + 0x3C], 0          ; CDW15
+    a32 mov dword [fs:edi + 0x20], eax        ; PRP2
+    a32 mov dword [fs:edi + 0x24], 0
+    a32 mov dword [fs:edi + 0x28], ebx        ; SLBA low
+    a32 mov dword [fs:edi + 0x2C], 0
+    a32 mov dword [fs:edi + 0x30], 0          ; NLB=0 (1 sector)
+    a32 mov dword [fs:edi + 0x34], 0
+    a32 mov dword [fs:edi + 0x38], 0
+    a32 mov dword [fs:edi + 0x3C], 0
 
-    ; Advance SQ Tail (modulo 16)
     inc     edx
     and     edx, 0x0F
     mov     [ds:SCRATCH_NVME_SQ_TAIL], dl
 
-    ; Ring IO SQ 1 Tail Doorbell (offset 0x1008)
-    a32 mov dword [fs:esi + 0x1008], edx
+    a32 mov dword [fs:esi + 0x1008], edx      ; IO SQ1 tail doorbell
 
-    ; Poll IO CQ 1 Head (0..15) for completion
     movzx   ebx, byte [ds:SCRATCH_NVME_CQ_HEAD]
     mov     edi, ebx
-    shl     edi, 4                          ; edi = head * 16
-    add     edi, NVME_IO_CQ_ADDR            ; EDI = slot address in IO CQ
+    shl     edi, 4
+    add     edi, NVME_IO_CQ_ADDR
 
-    mov     bl, [ds:SCRATCH_NVME_CQ_PHASE]  ; Expected phase bit
+    mov     bl, [ds:SCRATCH_NVME_CQ_PHASE]
     mov     ecx, 0x001FFFFF
 .poll_io_cq:
-    a32 mov ax, [fs:edi + 14]               ; Status word + Phase bit at offset +14
+    a32 mov ax, [fs:edi + 14]
     mov     dl, al
-    and     dl, 0x01                        ; Phase bit
+    and     dl, 0x01
     cmp     dl, bl
     je      .cq_completed
     dec     ecx
@@ -249,31 +220,26 @@ nvme_read_sectors:
     jmp     .read_error
 
 .cq_completed:
-    ; Check NVMe Status Field (bits 15:1 of word at +14 must be 0)
     mov     dx, ax
-    and     dx, 0xFFFE
+    and     dx, 0xFFFE                        ; status bits[15:1]
 
-    ; Advance CQ Head (modulo 16)
     movzx   eax, byte [ds:SCRATCH_NVME_CQ_HEAD]
     inc     eax
     cmp     eax, 16
     jb      .cq_head_ok
     xor     eax, eax
-    ; Flip phase bit on wrap
-    xor     byte [ds:SCRATCH_NVME_CQ_PHASE], 1
+    xor     byte [ds:SCRATCH_NVME_CQ_PHASE], 1 ; invert phase on wrap
 
 .cq_head_ok:
     mov     [ds:SCRATCH_NVME_CQ_HEAD], al
 
-    ; Ring IO CQ 1 Head Doorbell (offset 0x100C)
-    a32 mov dword [fs:esi + 0x100C], eax
+    a32 mov dword [fs:esi + 0x100C], eax      ; IO CQ1 head doorbell
 
     test    dx, dx
     pop     ebx
     pop     cx
     jnz     .read_error
 
-    ; Advance LBA by 1 and physical buffer pointer by 512 bytes
     inc     ebx
     add     ebp, 512
     dec     cx

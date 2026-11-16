@@ -1,68 +1,61 @@
-; entry.asm — IPO_Firmware Entry Point & Orchestration
-; Assembled with ORG 0x0000, executed in CS=0xF000 (Shadow RAM at 0xF000:0x0000)
+; IPO_Firmware entry point and hardware init (ORG 0x0000, CS=0xF000 in shadow RAM)
 
 BITS 16
 ORG 0x0000
 
 %include "boot_constants.inc"
 
-; Offset 0x0000: Magic header validated by Boot_ROM
+; Offset 0x0000: signature verified by stage-1 loader at handoff
 db      "IPO_Firmware"
 
-; Offset 0x000C: Firmware entry point
+; Offset 0x000C: entry point
 firmware_entry:
     cli
     cld
 
-    ; Establish segment registers for Firmware (CS=0xF000 in Shadow RAM)
     mov     ax, cs
     mov     ds, ax
     mov     es, ax
 
-    ; Setup stack
     xor     ax, ax
     mov     ss, ax
     xor     esp, esp
     mov     sp, FW_STACK_PTR
 
-    ; Initialize serial port
     call    serial_init
-
-    ; Setup Interrupt Vector Table (IVT) and BDA
     call    ivt_setup
 
-    ; Setup ACPI 1.0 Tables (RSDP in EBDA 0x9FC00, RSDT, MADT)
+    ; Populate RSDP in EBDA (0x9FC00) and ACPI tables
     call    acpi_init_tables
 
-    ; Scan PCI Buses for VGA, SATA AHCI, NVMe, and USB host controllers
     call    pci_scan_devices
     mov     si, msg_pci_ready
     call    fw_log
 
-    ; Initialize Video Subsystem (Mode 03h: 80x25 text) if VGA present
+    ; Initialize VGA Mode 03h (80x25 text) if a display controller was found
     xor     ax, ax
     mov     es, ax
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
     jne     .skip_vga_init
 
-    ; Check for a Video Option ROM at 0xC000
     call    video_option_rom_init
 
-    ; Set Video Mode 03h (80x25 text mode) unconditionally
-    ; If a Video Option ROM is active, this calls it via INT 42h
-    ; Otherwise, this calls our native int10h_handler
+    ; Delegates to Option ROM through INT 42h if loaded, else native INT 10h handler
     mov     ax, 0x0003
     int     0x10
 
     call    fw_render_header
 .skip_vga_init:
 
-    ; Log initialization diagnostics to screen and serial
     mov     si, msg_fw_banner
     call    fw_log
     mov     si, msg_ivt_ready
     call    fw_log
     mov     si, msg_acpi_ready
+    call    fw_log
+    movzx   eax, word [es:SCRATCH_CPU_COUNT]
+    call    fw_log_dec
+    mov     si, msg_acpi_tail
     call    fw_log
     cmp     byte [es:SCRATCH_VGA_FOUND], 1
     jne     .skip_vga_msg
@@ -70,41 +63,34 @@ firmware_entry:
     call    fw_log
 .skip_vga_msg:
 
-    ; Enable A20 Gate
     call    a20_enable
     mov     si, msg_a20_ready
     call    fw_log
 
-    ; Detect Memory
     call    ensure_memory_detected
     mov     si, msg_mem_ready
     call    fw_log
 
-    ; Initialize PS/2 Keyboard Controller (Translation Set 2 -> Set 1)
     call    ps2_controller_init
     mov     si, msg_kbd_ready
     call    fw_log
 
-    ; Initialize Modern Storage Subsystems (SATA AHCI, NVMe, USB)
-    ; Set default drive 0x80 and 0x81 to Legacy ATA PIO
+    ; Default drives 0x80 and 0x81 to legacy ATA PIO before probing PCI storage
     xor     ax, ax
     mov     es, ax
     mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_ATA_PIO
     mov     byte [es:SCRATCH_DRV_TYPE_81], DRV_TYPE_ATA_PIO
 
-    ; Try initializing SATA AHCI
     call    ahci_init
     jc      .check_nvme_storage
-    ; AHCI active: register Drive 0x80 as SATA AHCI
     mov     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_SATA_AHCI
     mov     si, msg_ahci_ready
     call    fw_log
 
 .check_nvme_storage:
-    ; Try initializing NVMe Storage
     call    nvme_init
     jc      .check_usb_storage
-    ; NVMe active: if Drive 0x80 was taken by AHCI, map NVMe to 0x81, else to 0x80
+    ; Map NVMe to 0x81 if AHCI already claimed 0x80
     xor     ax, ax
     mov     es, ax
     cmp     byte [es:SCRATCH_DRV_TYPE_80], DRV_TYPE_SATA_AHCI
@@ -118,26 +104,23 @@ firmware_entry:
     call    fw_log
 
 .check_usb_storage:
-    ; Try initializing USB Mass Storage
     call    usb_init
     jc      .storage_init_done
-    ; USB drive active: register Drive 0x82 as USB Flash Drive
     mov     byte [es:SCRATCH_DRV_TYPE_82], DRV_TYPE_USB_BOT
     mov      byte [es:0x0475], 3
     mov     si, msg_usb_ready
     call    fw_log
 
 .storage_init_done:
-    ; Discover bootable disk, load MBR, and hand off control
     jmp     chainload_boot
 
-; Serial (COM1) Driver Routines
+; COM1 UART init and polling output
 serial_init:
     push    dx
     push    ax
 
-    ; Test if UART actually exists by writing and reading scratch register port 0x3F8+7 (0x3FF)
-    mov     dx, COM1_PORT + 7               ; Scratch register
+    ; Probe UART presence using scratch register (0x3FF)
+    mov     dx, COM1_PORT + 7
     mov     al, 0xA5
     out     dx, al
     in      al, dx
@@ -183,7 +166,7 @@ serial_tx_char:
     jnz     .ready
     dec     cx
     jnz     .wait
-    ; Timeout countdown expired — do not hang if serial line disconnected
+    ; Avoid hanging if nothing is connected to COM1
     jmp     .tx_done
 .ready:
     mov     al, ah
@@ -195,7 +178,7 @@ serial_tx_char:
     pop     dx
     ret
 
-; Firmware Dual Logger (COM1 Serial + VGA Teletype via INT 10h)
+; Log helpers (output with INT 10h, mirrored to COM1)
 fw_log:
     push    si
     push    ax
@@ -245,7 +228,30 @@ fw_log_hex_byte:
     pop     bx
     ret
 
-; Included Modules
+; Print unsigned EAX in decimal using INT 10h
+fw_log_dec:
+    pushad
+    xor     ecx, ecx
+    mov     ebx, 10
+.dec_div:
+    xor     edx, edx
+    div     ebx
+    push    dx
+    inc     cx
+    test    eax, eax
+    jnz     .dec_div
+.dec_out:
+    pop     ax
+    add     al, '0'
+    push    bx
+    mov     ah, 0x0E
+    mov     bx, 0x0007
+    int     0x10
+    pop     bx
+    loop    .dec_out
+    popad
+    ret
+
 %include "pci_scan.asm"
 %include "video_option_rom.asm"
 %include "ahci.asm"
@@ -260,10 +266,10 @@ fw_log_hex_byte:
 %include "kbd.asm"
 %include "chainload.asm"
 
-; Messages & Data
 msg_fw_banner   db "[IPO_Firmware] Firmware initialized (Shadow RAM mode)", 10, 0
 msg_ivt_ready   db "[IPO_Firmware] IVT installed (INT 10h, 13h, 15h, 16h registered)", 10, 0
-msg_acpi_ready  db "[IPO_Firmware] ACPI 1.0 tables installed (RSDP in EBDA, RSDT, MADT)", 10, 0
+msg_acpi_ready  db "[IPO_Firmware] ACPI tables installed (CPUs=", 0
+msg_acpi_tail   db ", RSDP/RSDT/MADT/FACP/DSDT)", 10, 0
 msg_vga_ready   db "[IPO_Firmware] Video Mode 03h (80x25 text) configured", 10, 0
 msg_a20_ready   db "[IPO_Firmware] Fast A20 Gate activated and verified", 10, 0
 msg_mem_ready   db "[IPO_Firmware] Memory map prepared (E820/E801 ready)", 10, 0

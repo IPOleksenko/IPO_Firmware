@@ -1,9 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# =============================================================================
-# Update and install required packages for IPO_Firmware
-# =============================================================================
+# Install build, emulation, and flashing dependencies for IPO_Firmware
 
 echo "================================================================="
 echo "[IPO_Firmware] Installing System Dependencies"
@@ -12,16 +10,16 @@ echo "================================================================="
 echo "Updating package lists..."
 sudo apt update || { echo "Failed to update package lists" >&2; exit 1; }
 
-# Required packages for building, emulating, and flashing firmware to real hardware
+# Packages needed to assemble, test, and flash the firmware image
 REQUIRED_PACKAGES=(
-    "build-essential"    # GNU Make, GCC, standard build toolchain
-    "nasm"               # x86 assembler for 16-bit Real Mode firmware
-    "python3"            # Python 3 for ROM packaging (tools/build_rom.py)
-    "qemu-system-x86"    # QEMU emulator (qemu-system-i386)
-    "qemu-system-gui"    # Audio and graphical display modules for QEMU
-    "qemu-utils"         # Disk image utilities (qemu-img)
-    "flashrom"           # Utility to flash firmware onto physical ROM chips
-    "xxd"                # Hex viewer for inspecting ROM binaries
+    "build-essential"    # C toolchain and build utilities
+    "nasm"               # 16-bit Real Mode assembler
+    "python3"            # Script runtime for tools/build_rom.py
+    "qemu-system-x86"    # PC system emulator
+    "qemu-system-gui"    # Display and audio backends for emulation
+    "qemu-utils"         # Disk image tools
+    "flashrom"           # Flash programmer utility
+    "xxd"                # Hex dump utility
 )
 
 MISSING_PACKAGES=()
@@ -45,9 +43,7 @@ else
     echo "All required system packages are already installed."
 fi
 
-# =============================================================================
-# Verify installation
-# =============================================================================
+# Verify installed tools
 
 echo ""
 echo "================================================================="

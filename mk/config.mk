@@ -1,14 +1,10 @@
-# =============================================================================
-#                     TOOLS
-# =============================================================================
+# Toolchain binaries
 
 ASM     := nasm
 PYTHON  := python3
 QEMU    := qemu-system-i386
 
-# =============================================================================
-#                 PROJECT DIRECTORIES
-# =============================================================================
+# Project layout
 
 SRC     := src
 BUILD   := build
@@ -16,20 +12,16 @@ BIN     := $(BUILD)/.bin
 INC     := include
 TOOLS   := tools
 
-# =============================================================================
-#                 OUTPUT ARTIFACTS
-# =============================================================================
+# Output binaries
 
-# Firmware payload binary (up to 32 KiB, for embedding in a compatible Boot ROM image)
+# Raw firmware payload (max 32 KiB)
 FIRMWARE_PAYLOAD := $(BIN)/firmware.bin
 
-# Full binary image for direct QEMU execution or physical chip flashing
+# Final ROM image for emulation or flash chips
 FIRMWARE_BIN := $(BUILD)/firmware.bin
 TARGET_BIN   := $(FIRMWARE_BIN)
 
-# =============================================================================
-#                 SOURCES
-# =============================================================================
+# Input sources
 
 SRCS    := $(SRC)/entry.asm \
            $(SRC)/pci_scan.asm \
@@ -49,17 +41,13 @@ SRCS    := $(SRC)/entry.asm \
            $(SRC)/vga_dac.bin \
            $(INC)/boot_constants.inc
 
-# =============================================================================
-#                 FLAGS
-# =============================================================================
+# Assembler flags
 
 ASM_FLAGS := -f bin -I$(INC) -I$(SRC)
 
-# =============================================================================
-#                 EMULATION RUN ARGUMENTS
-# =============================================================================
+# Emulation options
 
-# External Boot ROM binary to embed into ROM (optional: make run BOOTROM=/path/to/bootrom.bin)
+# Optional stage-1 ROM image to embed (BOOTROM=/path/to/rom.bin)
 BOOTROM   ?=
 BOOT_ROM  ?= $(BOOTROM)
 RAMBOOT   ?= $(BOOT_ROM)
@@ -67,22 +55,22 @@ RAM_BOOT  ?= $(RAMBOOT)
 ROM_BOOT  ?= $(RAM_BOOT)
 ROM_BIN   ?= $(ROM_BOOT)
 
-# Target OS storage media (optional argument: make run OS=/path/to/disk.img)
+# Optional OS disk image (OS=/path/to/disk.img)
 OS       ?=
 OS_IMAGE ?= $(OS)
 CPU      ?= pentium3
 MEM      ?= 512
 
-# Base QEMU flags for running the firmware image
+# Base emulator flags
 QEMU_FLAGS := -M pc -cpu $(CPU) -m $(MEM) -bios $(TARGET_BIN) -serial stdio
 
-# Audio configuration for PC Speaker
+# PC speaker audio backend
 AUDIO ?= pa
 ifneq ($(AUDIO),none)
 QEMU_FLAGS += -audiodev $(AUDIO),id=pa -machine pcspk-audiodev=pa
 endif
 
-# If an OS storage media image is supplied, attach it according to DRIVE_TYPE (ide, ahci, or usb)
+# Attach OS image according to DRIVE_TYPE (ide, ahci, or usb)
 ifneq ($(OS_IMAGE),)
 DRIVE_TYPE ?= ide
 ifeq ($(DRIVE_TYPE),ahci)

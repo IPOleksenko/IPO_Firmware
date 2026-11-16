@@ -1,5 +1,4 @@
-; int10.asm — Video Services (INT 10h) implementation
-; Supports 80x25 16-color VGA text mode (Mode 03h)
+; INT 10h video services (Mode 03h 80x25 VGA text, with COM1 teletype mirroring)
 
 BITS 16
 
@@ -14,7 +13,7 @@ int10h_handler:
     pop     ds
     jne     .native_int10
 
-    ; Video Option ROM is active: mirror AH=0x0E (Teletype) to serial COM1
+    ; Option ROM active: mirror AH=0Eh teletype to COM1 before forwarding to INT 42h
     cmp     ah, 0x0E
     jne     .call_video_rom
 
@@ -46,7 +45,6 @@ int10h_handler:
     push    bx
     push    ax
 
-    ; Use Firmware data segment for local operations
     mov     bx, cs
     mov     ds, bx
 
@@ -61,13 +59,11 @@ int10h_handler:
     cmp     ah, 0x03
     je      .fn_get_cursor_pos
 
-    ; Unsupported function — just return
     jmp     .done
 
-; AH = 0x0E — Teletype Character Output
-; Input: AL = ASCII char, BH = Page (ignored for page 0), BL = Color (attribute)
+; AH=0Eh: teletype output (AL=char)
 .fn_teletype:
-    ; Mirror character to COM1 serial for debugging (send CR before LF)
+    ; Mirror to COM1 (CR before LF)
     cmp     al, 10
     jne     .tt_tx
     push    ax
@@ -79,21 +75,19 @@ int10h_handler:
     call    serial_tx_char
     pop     ax
 
-    mov     cl, al                          ; Save character in CL
+    mov     cl, al
 
-    ; Access BDA for cursor coordinates
     xor     bx, bx
-    mov     es, bx                          ; ES = 0x0000 (BDA at 0x0400)
-    mov     dx, [es:0x0450]                 ; DH = row (0..24), DL = col (0..79)
+    mov     es, bx
+    mov     dx, [es:0x0450]                 ; DH=row (0..24), DL=col (0..79)
 
-    cmp     cl, 0x0D                        ; Carriage return (\r)
+    cmp     cl, 0x0D
     je      .tt_cr
-    cmp     cl, 0x0A                        ; Line feed (\n)
+    cmp     cl, 0x0A
     je      .tt_lf
-    cmp     cl, 0x08                        ; Backspace (\b)
+    cmp     cl, 0x08
     je      .tt_bs
 
-    ; Normal printable character: write to VGA text buffer (0xB800) if VGA present
     push    es
     push    dx
     xor     bx, bx
@@ -102,33 +96,30 @@ int10h_handler:
     jne     .skip_vga_write
 
     mov     bx, VGA_TEXT_SEG
-    mov     es, bx                          ; ES = 0xB800
+    mov     es, bx
 
-    ; Offset = (row * 80 + col) * 2
-    movzx   ax, dh                          ; AX = row (0..24)
-    shl     ax, 4                           ; AX = row * 16
+    ; Byte offset = (row * 80 + col) * 2
+    movzx   ax, dh
+    shl     ax, 4
     mov     di, ax
-    shl     ax, 2                           ; AX = row * 64
-    add     di, ax                          ; DI = row * 80
-    movzx   ax, dl                          ; AX = col (0..79)
-    add     di, ax                          ; DI = row * 80 + col
-    shl     di, 1                           ; DI = buffer byte offset
+    shl     ax, 2
+    add     di, ax
+    movzx   ax, dl
+    add     di, ax
+    shl     di, 1
 
-    ; Character attribute: default to light gray on black (0x07)
-    mov     al, cl                          ; Character saved in CL
-    mov     ah, 0x07
+    mov     al, cl
+    mov     ah, 0x07                        ; light gray on black
     stosw
 
 .skip_vga_write:
     pop     dx
     pop     es
 
-    ; Advance column
     inc     dl
     cmp     dl, 80
     jb      .tt_save_cursor
 
-    ; Wrap to next line
     xor     dl, dl
     inc     dh
     jmp     .tt_check_scroll
@@ -150,72 +141,62 @@ int10h_handler:
     cmp     dh, 25
     jb      .tt_save_cursor
 
-    ; Screen scroll up by 1 line
     call    vga_scroll_up
-    mov     dh, 24                          ; Keep cursor on last row
+    mov     dh, 24
 
 .tt_save_cursor:
-    ; Save updated row/col back to BDA (0x0450)
     xor     bx, bx
     mov     es, bx
     mov     [es:0x0450], dx
-
-    ; Update hardware cursor position via CRT controller
     call    update_hw_cursor
     jmp     .done
 
-; AH = 0x00 — Set Video Mode
-; Input: AL = Video Mode (supports Mode 03h)
+; AH=00h: set video mode (Mode 03h 80x25 text)
 .fn_set_mode:
     call    vga_hardware_init
     call    vga_clear_screen
 
-    ; Initialize BDA video fields
     xor     bx, bx
     mov     es, bx
-    mov     byte [es:0x0449], 0x03          ; Video mode = 3 (80x25 text)
-    mov     word [es:0x044A], 80            ; Columns = 80
-    mov     word [es:0x044C], 4096          ; Video page size
-    mov     word [es:0x044E], 0             ; Page offset = 0
-    mov     word [es:0x0450], 0             ; Cursor pos = (0, 0)
-    mov     byte [es:0x0462], 0             ; Active page = 0
-    mov     word [es:0x0463], CRT_ADDR_PORT ; CRT base = 0x3D4
-    mov     byte [es:0x0484], 24            ; Rows - 1 = 24
-    mov     word [es:0x0485], 16            ; Char height = 16
-    mov     byte [es:0x0487], 0x60          ; EGA/VGA active, 256KB video RAM
+    mov     byte [es:0x0449], 0x03          ; mode 03h
+    mov     word [es:0x044A], 80            ; columns
+    mov     word [es:0x044C], 4096          ; page size
+    mov     word [es:0x044E], 0             ; page offset
+    mov     word [es:0x0450], 0             ; cursor (0, 0)
+    mov     byte [es:0x0462], 0             ; active page
+    mov     word [es:0x0463], CRT_ADDR_PORT ; CRTC base
+    mov     byte [es:0x0484], 24            ; rows - 1
+    mov     word [es:0x0485], 16            ; char height
+    mov     byte [es:0x0487], 0x60          ; EGA/VGA active, 256 KiB VRAM
     mov     byte [es:0x0488], 0xF9          ; EGA feature switches
-    mov     byte [es:0x0489], 0x51          ; Video mode options
+    mov     byte [es:0x0489], 0x51          ; video mode options
 
     xor     dx, dx
     call    update_hw_cursor
     jmp     .done
 
-; AH = 0x01 — Set Cursor Shape
-; Input: CH = start scan line (bit 5 = 1 hides cursor), CL = end scan line
+; AH=01h: set cursor shape (CH=start scan + bit 5 hide, CL=end scan)
 .fn_set_cursor_shape:
-    ; Save to BDA 0x0460
     xor     bx, bx
     mov     es, bx
     mov     [es:0x0460], cx
 
-    ; Program CRT controller registers 0x0A and 0x0B
     mov     dx, CRT_ADDR_PORT
-    mov     al, 0x0A
+    mov     al, 0x0A                        ; cursor start / hide bit
     out     dx, al
     inc     dx
     mov     al, ch
-    out     dx, al                          ; Reg 0x0A: Cursor Start / Hide bit
+    out     dx, al
 
     dec     dx
-    mov     al, 0x0B
+    mov     al, 0x0B                        ; cursor end
     out     dx, al
     inc     dx
     mov     al, cl
-    out     dx, al                          ; Reg 0x0B: Cursor End
+    out     dx, al
     jmp     .done
 
-; AH = 0x02 — Set Cursor Position
-; Input: BH = Page, DH = Row, DL = Column
+; AH=02h: set cursor position (DH=row, DL=col)
 .fn_set_cursor_pos:
     xor     bx, bx
     mov     es, bx
@@ -223,20 +204,17 @@ int10h_handler:
     call    update_hw_cursor
     jmp     .done
 
-; AH = 0x03 — Get Cursor Position and Shape
-; Input: BH = Page
-; Output: DH = Row, DL = Column, CH = Start scan, CL = End scan
+; AH=03h: get cursor position/shape -> DH=row, DL=col, CH=start, CL=end
 .fn_get_cursor_pos:
     xor     bx, bx
     mov     es, bx
     mov     dx, [es:0x0450]
     mov     cx, [es:0x0460]
 
-    ; Store results in caller's saved registers on stack
     ; Stack layout: [bp+0]=ax, [bp+2]=bx, [bp+4]=cx, [bp+6]=dx
     mov     bp, sp
-    mov     [bp + 4], cx                   ; Return CX (start/end scan line)
-    mov     [bp + 6], dx                   ; Return DX (row/column)
+    mov     [bp + 4], cx
+    mov     [bp + 6], dx
     jmp     .done
 
 .done:
@@ -251,9 +229,8 @@ int10h_handler:
     pop     ds
     iret
 
-; Helper Functions for Video Operations
+; DX = (row << 8) | col
 update_hw_cursor:
-    ; DX = (row << 8) | col
     push    ax
     push    bx
     push    dx
@@ -270,19 +247,17 @@ update_hw_cursor:
     shl     ax, 2
     add     bx, ax
     movzx   ax, dl
-    add     bx, ax                          ; BX = linear character index (0..1999)
+    add     bx, ax                          ; cell index (0..1999)
     mov     dx, CRT_ADDR_PORT
 
-    ; Cursor Location High Register (0x0E)
-    mov     al, 0x0E
+    mov     al, 0x0E                        ; cursor location high
     out     dx, al
     inc     dx
     mov     al, bh
     out     dx, al
 
-    ; Cursor Location Low Register (0x0F)
     dec     dx
-    mov     al, 0x0F
+    mov     al, 0x0F                        ; cursor location low
     out     dx, al
     inc     dx
     mov     al, bl
@@ -312,7 +287,7 @@ vga_clear_screen:
     mov     es, ax
     xor     di, di
     mov     cx, 80 * 25
-    mov     ax, 0x0720                      ; Space (0x20) with attribute 0x07
+    mov     ax, 0x0720
     rep     stosw
 
     pop     ax
@@ -341,14 +316,13 @@ vga_scroll_up:
     mov     ds, ax
     mov     es, ax
 
-    ; Move lines 2..24 to lines 1..23 (80 * 23 words = 1840 words, preserving Row 0 header)
-    mov     di, 160                         ; Destination: row 1
-    mov     si, 320                         ; Source: row 2
+    ; Scroll rows 2..24 -> 1..23 to preserve row 0 header
+    mov     di, 160
+    mov     si, 320
     mov     cx, 80 * 23
     cld
     rep     movsw
 
-    ; Clear row 24 with spaces
     mov     di, 80 * 24 * 2
     mov     cx, 80
     mov     ax, 0x0720
@@ -363,7 +337,7 @@ vga_scroll_up:
 .vga_scroll_done:
     ret
 
-; Render Firmware Startup Header (Row 0: IPO_Firmware ... by IPOleksenko)
+; Draw startup header on row 0
 fw_render_header:
     push    es
     xor     ax, ax
@@ -379,11 +353,10 @@ fw_render_header:
     push    cx
     push    dx
 
-    ; Point ES to VGA text segment (0xB800)
     mov     ax, VGA_TEXT_SEG
     mov     es, ax
 
-    ; Row 0 Left (col 0): "IPO_Firmware" (attribute 0x0A: Light Green on Black)
+    ; Row 0 col 0, light green on black (0x0A)
     xor     di, di
     mov     si, fw_str_title
     mov     ah, 0x0A
@@ -395,8 +368,7 @@ fw_render_header:
     jmp     .loop_title
 .title_done:
 
-    ; Row 0 Right (col 66): "by IPOleksenko" (attribute 0x0A)
-    ; Col 66 * 2 = 132 byte offset
+    ; Row 0 col 66 (byte offset 132)
     mov     di, 132
     mov     si, fw_str_author
     mov     ah, 0x0A
@@ -408,10 +380,10 @@ fw_render_header:
     jmp     .loop_author
 .author_done:
 
-    ; Set initial cursor position in BDA to Row 2, Col 0 (start of log output)
+    ; Place initial log cursor at row 2, col 0
     xor     ax, ax
     mov     es, ax
-    mov     dx, 0x0200                      ; DH = 2 (row), DL = 0 (col)
+    mov     dx, 0x0200
     mov     [es:0x0450], dx
     call    update_hw_cursor
 
@@ -427,8 +399,7 @@ fw_render_header:
 fw_str_title  db "IPO_Firmware", 0
 fw_str_author db "by IPOleksenko", 0
 
-; VGA Hardware Initialization (Mode 03h: 80x25 text console)
-; Programs Sequencer, CRTC, GC, AC, DAC, loads 8x16 font, and enables display.
+; Program VGA Mode 03h (80x25 text): Sequencer, CRTC, GC, AC, DAC, and 8x16 font
 vga_hardware_init:
     push    es
     xor     ax, ax
@@ -448,12 +419,12 @@ vga_hardware_init:
     mov     ax, cs
     mov     ds, ax
 
-    ; Misc Output Register (Port 0x3C2)
+    ; Misc Output: 28 MHz clock, color CRTC (0x3D4), RAM decode enabled
     mov     dx, 0x03C2
-    mov     al, 0x67                        ; 28MHz, color mode (0x3D4), enable RAM
+    mov     al, 0x67
     out     dx, al
 
-    ; Sequencer Registers (Port 0x3C4 / 0x3C5)
+    ; Sequencer (0x3C4/0x3C5)
     mov     dx, 0x03C4
     mov     si, vga_seq_data
     mov     cx, 5
@@ -468,8 +439,8 @@ vga_hardware_init:
     inc     ah
     loop    .loop_seq
 
-    ; CRTC: Unlock CRTC registers 0..7 (clear bit 7 of reg 0x11)
-    mov     dx, CRT_ADDR_PORT               ; 0x3D4
+    ; Unlock CRTC regs 0..7 (clear reg 0x11 bit 7)
+    mov     dx, CRT_ADDR_PORT
     mov     al, 0x11
     out     dx, al
     inc     dx
@@ -478,7 +449,6 @@ vga_hardware_init:
     out     dx, al
     dec     dx
 
-    ; Write all 25 CRTC registers (Port 0x3D4 / 0x3D5)
     mov     si, vga_crtc_data
     mov     cx, 25
     xor     ah, ah
@@ -492,7 +462,7 @@ vga_hardware_init:
     inc     ah
     loop    .loop_crtc
 
-    ; Graphics Controller Registers (Port 0x3CE / 0x3CF)
+    ; Graphics Controller (0x3CE/0x3CF)
     mov     dx, 0x03CE
     mov     si, vga_gc_data
     mov     cx, 9
@@ -507,27 +477,24 @@ vga_hardware_init:
     inc     ah
     loop    .loop_gc
 
-    ; Load 8x16 Font into Plane 2 (0xA0000)
-    ; Switch Sequencer to Plane 2 access
+    ; Map Plane 2 at 0xA0000 to load 8x16 font
     mov     dx, 0x03C4
-    mov     ax, 0x0100                      ; Synchronous reset
+    mov     ax, 0x0100                      ; sync reset
     out     dx, ax
-    mov     ax, 0x0402                      ; Plane 2 write enable (bit 2)
+    mov     ax, 0x0402                      ; Plane 2 write enable
     out     dx, ax
-    mov     ax, 0x0704                      ; Sequential addressing (disable odd/even)
+    mov     ax, 0x0704                      ; sequential addressing
     out     dx, ax
-    mov     ax, 0x0300                      ; Clear reset
+    mov     ax, 0x0300                      ; clear reset
     out     dx, ax
 
-    ; Switch GC to map memory at 0xA0000
     mov     dx, 0x03CE
-    mov     ax, 0x0005                      ; Write mode 0
+    mov     ax, 0x0005                      ; write mode 0
     out     dx, ax
-    mov     ax, 0x0406                      ; Map memory to 0xA0000 (64KB)
+    mov     ax, 0x0406                      ; 64 KiB window at 0xA0000
     out     dx, ax
 
-    ; Copy 256 characters * 16 bytes into ES:DI (0xA000:0x0000)
-    ; Each character in Plane 2 takes 32 bytes (16 bytes glyph + 16 bytes pad)
+    ; Plane 2 uses a 32 B stride per glyph (16 B glyph + 16 B pad)
     mov     ax, 0xA000
     mov     es, ax
     xor     di, di
@@ -535,32 +502,30 @@ vga_hardware_init:
     mov     cx, 256
 .loop_font:
     push    cx
-    mov     cx, 8                           ; 8 words = 16 bytes
+    mov     cx, 8
     rep     movsw
-    add     di, 16                          ; Next character slot in 32-byte stride
+    add     di, 16
     pop     cx
     loop    .loop_font
 
-    ; Restore Sequencer to normal text mode (Planes 0 & 1, odd/even enabled)
+    ; Restore Sequencer and GC for odd/even text mode at 0xB8000
     mov     dx, 0x03C4
     mov     ax, 0x0100
     out     dx, ax
-    mov     ax, 0x0302                      ; Planes 0 & 1 enable
+    mov     ax, 0x0302                      ; Planes 0 & 1
     out     dx, ax
-    mov     ax, 0x0304                      ; Odd/even mode enable
+    mov     ax, 0x0304                      ; odd/even
     out     dx, ax
     mov     ax, 0x0300
     out     dx, ax
 
-    ; Restore GC to normal text mode (0xB8000)
     mov     dx, 0x03CE
-    mov     ax, 0x1005                      ; Odd/even mode
+    mov     ax, 0x1005                      ; odd/even
     out     dx, ax
-    mov     ax, 0x0E06                      ; Map memory to 0xB8000
+    mov     ax, 0x0E06                      ; map at 0xB8000
     out     dx, ax
 
-    ; Attribute Controller Registers (Port 0x3C0)
-    ; Reset flip-flop by reading 0x3DA
+    ; Reset Attribute Controller flip-flop before programming 0x3C0
     mov     dx, 0x03DA
     in      al, dx
 
@@ -576,11 +541,11 @@ vga_hardware_init:
     inc     ah
     loop    .loop_ac
 
-    ; Initialize DAC Palette (256 standard VGA colors)
+    ; Load 256-entry DAC palette
     mov     dx, 0x03C8
     xor     al, al
-    out     dx, al                          ; Start at color index 0
-    inc     dx                              ; Port 0x03C9 (DAC Data)
+    out     dx, al
+    inc     dx
     mov     si, vga_dac_data
     mov     cx, 256 * 3
 .loop_dac:
@@ -588,11 +553,11 @@ vga_hardware_init:
     out     dx, al
     loop    .loop_dac
 
-    ; Enable Video Output (PAS bit in Attribute Controller)
+    ; Enable video output (PAS bit 5)
     mov     dx, 0x03DA
-    in      al, dx                          ; Reset flip-flop
+    in      al, dx
     mov     dx, 0x03C0
-    mov     al, 0x20                        ; Bit 5 = 1 (Enable Video / Palette Access Source)
+    mov     al, 0x20
     out     dx, al
 
     pop     ax
@@ -605,7 +570,7 @@ vga_hardware_init:
 .vga_hw_done:
     ret
 
-; VGA Mode 03h Register Tables
+; Mode 03h register tables
 vga_seq_data    db 0x03, 0x00, 0x03, 0x00, 0x02
 vga_crtc_data   db 0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F
                 db 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00
